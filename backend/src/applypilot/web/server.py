@@ -528,3 +528,341 @@ def purge_database() -> JSONResponse:
     conn.commit()
     return JSONResponse({"deleted": cursor.rowcount})
 
+
+
+# ---------------------------------------------------------------------------
+# Routes — SSE streaming
+# ---------------------------------------------------------------------------
+
+import asyncio
+import time as _time
+from fastapi.responses import StreamingResponse
+
+
+@app.get("/api/stream/task/{task_id}")
+async def stream_task_logs(task_id: str):
+    """Server-Sent Events: stream log lines for a background task until done."""
+
+    task = _tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    async def _generate():
+        sent = 0
+        while True:
+            task = _tasks.get(task_id)
+            if not task:
+                break
+            lines = task.get("log_lines", [])
+            new_lines = lines[sent:]
+            for line in new_lines:
+                # Escape SSE-special characters in log lines
+                safe = line.replace("\n", " ").replace("\r", "")
+                yield f"data: {safe}\n\n"
+                sent += 1
+            status = task.get("status", "pending")
+            if status in ("done", "error"):
+                yield f"event: status\ndata: {status}\n\n"
+                break
+            await asyncio.sleep(0.25)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
+
+
+@app.get("/api/stream/apply")
+async def stream_apply_status():
+    """Server-Sent Events: stream apply worker states every 500ms."""
+
+    async def _generate():
+        import dataclasses
+        from applypilot.apply import dashboard as _dash
+
+        while True:
+            with _dash._lock:
+                workers = [
+                    dataclasses.asdict(s) for s in _dash._worker_states.values()
+                ]
+                events = list(_dash._events)
+            totals = _dash.get_totals()
+
+            # Strip Rich markup from event strings
+            import re
+            clean_events = [re.sub(r"\[.*?\]", "", e) for e in events]
+
+            payload = json.dumps({
+                "workers": workers,
+                "events": clean_events,
+                "totals": totals,
+            })
+            yield f"data: {payload}\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Routes — Apply workers
+# ---------------------------------------------------------------------------
+
+# Module-level flag file path for stop signalling (process-safe)
+import multiprocessing as _mp
+
+_apply_process: Optional[_mp.Process] = None
+_apply_stop_flag: _mp.Value = _mp.Value("b", 0)
+
+
+@app.get("/api/apply/status")
+def apply_status() -> JSONResponse:
+    """Current snapshot of all apply worker states."""
+    import dataclasses
+    from applypilot.apply import dashboard as _dash
+
+    with _dash._lock:
+        workers = [dataclasses.asdict(s) for s in _dash._worker_states.values()]
+        events_raw = list(_dash._events)
+
+    import re
+    clean_events = [re.sub(r"\[.*?\]", "", e) for e in events_raw]
+
+    return JSONResponse({
+        "running": _apply_process is not None and _apply_process.is_alive(),
+        "workers": workers,
+        "events": clean_events,
+        "totals": _dash.get_totals(),
+    })
+
+
+def _run_apply_workers(workers: int, limit: int, min_score: int,
+                       headless: bool, continuous: bool, model: str) -> None:
+    """Target for the apply subprocess. Runs in an isolated process."""
+    from applypilot.config import load_env, ensure_dirs
+    from applypilot.database import init_db
+    load_env()
+    ensure_dirs()
+    init_db()
+    from applypilot.apply.launcher import apply_jobs
+    apply_jobs(
+        workers=workers,
+        continuous=continuous,
+        headless=headless,
+        limit=limit if limit > 0 else None,
+        min_score=min_score,
+        model=model or None,
+    )
+
+
+@app.post("/api/apply/start")
+async def start_apply(request: Request) -> JSONResponse:
+    """Start apply workers in a background process."""
+    global _apply_process, _apply_stop_flag
+
+    if _apply_process is not None and _apply_process.is_alive():
+        return JSONResponse({"ok": False, "error": "Apply workers already running"}, status_code=409)
+
+    body = await request.json()
+    workers = int(body.get("workers", 1))
+    limit = int(body.get("limit", 0))
+    min_score = int(body.get("min_score", 7))
+    headless = bool(body.get("headless", True))
+    continuous = bool(body.get("continuous", False))
+    model = str(body.get("model", ""))
+
+    _apply_stop_flag.value = 0
+    _apply_process = _mp.Process(
+        target=_run_apply_workers,
+        args=(workers, limit, min_score, headless, continuous, model),
+        daemon=True,
+    )
+    _apply_process.start()
+    return JSONResponse({"ok": True, "pid": _apply_process.pid})
+
+
+@app.post("/api/apply/stop")
+def stop_apply() -> JSONResponse:
+    """Signal apply workers to stop gracefully."""
+    global _apply_process, _apply_stop_flag
+
+    if _apply_process is None or not _apply_process.is_alive():
+        return JSONResponse({"ok": False, "error": "No apply workers running"}, status_code=409)
+
+    _apply_stop_flag.value = 1
+    # Give workers 5s to stop gracefully then terminate
+    _apply_process.join(timeout=5)
+    if _apply_process.is_alive():
+        _apply_process.terminate()
+    _apply_process = None
+    return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Routes — Config (env keys, resume)
+# ---------------------------------------------------------------------------
+
+from applypilot.config import APP_DIR
+
+
+@app.get("/api/config/env")
+def get_env_config() -> JSONResponse:
+    """Read .env keys with values masked."""
+    env_path = APP_DIR / ".env"
+    keys = {
+        "GEMINI_API_KEY": None,
+        "OPENAI_API_KEY": None,
+        "LLM_URL": None,
+        "LLM_MODEL": None,
+        "CAPSOLVER_API_KEY": None,
+    }
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, _, v = line.partition("=")
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k in keys:
+                    # Return actual value for non-secret keys; mask secrets
+                    if k in ("LLM_URL", "LLM_MODEL"):
+                        keys[k] = v or None
+                    else:
+                        keys[k] = "***" if v else None
+    return JSONResponse(keys)
+
+
+@app.put("/api/config/env")
+async def update_env_config(request: Request) -> JSONResponse:
+    """Write/update API key values in .env."""
+    data = await request.json()
+    env_path = APP_DIR / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing lines
+    existing: dict[str, str] = {}
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                k, _, v = line.partition("=")
+                existing[k.strip()] = v.strip()
+
+    # Merge updates (empty string = delete key)
+    for k, v in data.items():
+        if v == "" or v is None:
+            existing.pop(k, None)
+        else:
+            existing[k] = v
+
+    # Write back
+    env_path.write_text(
+        "\n".join(f"{k}={v}" for k, v in existing.items()) + "\n",
+        encoding="utf-8",
+    )
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/config/resume")
+def get_resume_text() -> JSONResponse:
+    """Read master resume.txt content."""
+    from applypilot.config import RESUME_PATH
+    if not RESUME_PATH.exists():
+        return JSONResponse({"text": "", "exists": False})
+    return JSONResponse({"text": RESUME_PATH.read_text(encoding="utf-8"), "exists": True})
+
+
+@app.put("/api/config/resume")
+async def update_resume_text(request: Request) -> JSONResponse:
+    """Write master resume.txt content."""
+    from applypilot.config import RESUME_PATH
+    body = await request.json()
+    RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RESUME_PATH.write_text(body.get("text", ""), encoding="utf-8")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/config/resume/upload")
+async def upload_resume_pdf(request: Request) -> JSONResponse:
+    """Upload resume.pdf (multipart/form-data)."""
+    from fastapi import UploadFile, File
+    from applypilot.config import APP_DIR
+
+    # Parse multipart manually via starlette
+    form = await request.form()
+    file: UploadFile = form.get("file")  # type: ignore
+    if not file:
+        raise HTTPException(status_code=400, detail="No file provided")
+
+    dest = APP_DIR / "resume.pdf"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    content = await file.read()
+    dest.write_bytes(content)
+
+    # Extract text in background
+    task_id = _start_task(_extract_resume_text, dest)
+    return JSONResponse({"ok": True, "size": len(content), "task_id": task_id})
+
+
+def _extract_resume_text(pdf_path: Path) -> dict:
+    """Extract text from uploaded resume PDF → save as resume.txt."""
+    from applypilot.config import RESUME_PATH
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["pdftotext", "-layout", str(pdf_path), "-"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            RESUME_PATH.write_text(result.stdout, encoding="utf-8")
+            return {"extracted": True, "chars": len(result.stdout)}
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return {"extracted": False}
+
+
+# ---------------------------------------------------------------------------
+# Routes — System status
+# ---------------------------------------------------------------------------
+
+@app.get("/api/system/status")
+def system_status() -> JSONResponse:
+    """Return current tier, LLM provider, and available capabilities."""
+    import shutil
+    from applypilot.config import get_tier
+    from applypilot.llm import _detect_provider
+
+    tier = get_tier()
+    tier_labels = {
+        1: "Discovery Only",
+        2: "AI Scoring & Tailoring",
+        3: "Full Auto-Apply",
+    }
+
+    provider, model, _api_key = _detect_provider()
+
+    has_chrome = bool(shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser"))
+    has_claude_cli = bool(shutil.which("claude"))
+
+    return JSONResponse({
+        "tier": tier,
+        "tier_label": tier_labels.get(tier, "Unknown"),
+        "llm_provider": provider,
+        "llm_model": model,
+        "has_chrome": has_chrome,
+        "has_claude_cli": has_claude_cli,
+    })
