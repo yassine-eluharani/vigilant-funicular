@@ -8,6 +8,8 @@ resume.pdf
 
 # Runtime artifacts
 *.db
+*.db-shm
+*.db-wal
 tailored_resumes/
 cover_letters/
 chrome-workers/
@@ -26,6 +28,23 @@ __pycache__/
 dist/
 build/
 *.egg
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+frontend/.env*.local
+frontend/npm-debug.log*
+
+# Data directory (user config, DB mounted via Docker volume)
+data/
+
+# Personal / CV files
+cv-1.pdf
+cv-1.txt
 
 # IDE
 .vscode/

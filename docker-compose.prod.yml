@@ -1,0 +1,42 @@
+name: applypilot
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    command: uvicorn applypilot.web.server:app --host 0.0.0.0 --port 8000 --workers 2
+    environment:
+      - APPLYPILOT_DIR=/data
+      - PYTHONUNBUFFERED=1
+      - CORS_ORIGINS=${FRONTEND_ORIGIN:-http://localhost}
+    expose:
+      - "8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    environment:
+      - NEXT_PUBLIC_API_URL=/api   # Relative — nginx handles routing
+      - NODE_ENV=production
+    expose:
+      - "3000"
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
