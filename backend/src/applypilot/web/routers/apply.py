@@ -5,10 +5,12 @@ from __future__ import annotations
 import multiprocessing as _mp
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
-router = APIRouter()
+from applypilot.web.auth import get_current_user
+
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Module-level process handle (one apply session at a time)
 _apply_process: Optional[_mp.Process] = None

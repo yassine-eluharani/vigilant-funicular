@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 
 const NAV = [
   {
@@ -52,6 +53,7 @@ const NAV = [
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { logout } = useAuth();
 
   return (
     <aside className="flex flex-col w-52 shrink-0 border-r border-void-border bg-void-surface h-full">
@@ -98,8 +100,18 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-4 py-3 border-t border-void-border">
+      <div className="px-3 py-3 border-t border-void-border flex items-center justify-between gap-2">
         <p className="text-xs text-void-muted font-mono">v1.0.0</p>
+        <button
+          onClick={logout}
+          title="Sign out"
+          className="p-1.5 rounded-lg text-void-subtle hover:text-void-danger hover:bg-void-danger/10 transition-colors"
+        >
+          <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
+            <path fillRule="evenodd" d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Z" clipRule="evenodd" />
+            <path fillRule="evenodd" d="M19 10a.75.75 0 0 0-.75-.75H8.704l1.048-1.04a.75.75 0 1 0-1.056-1.064l-2.25 2.25a.75.75 0 0 0 0 1.064l2.25 2.25a.75.75 0 1 0 1.056-1.064L8.704 10.75H18.25A.75.75 0 0 0 19 10Z" clipRule="evenodd" />
+          </svg>
+        </button>
       </div>
     </aside>
   );

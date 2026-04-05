@@ -74,14 +74,14 @@ function ProfileTab() {
       <Section title="Work Authorization" className="mt-6">
         <div className="flex flex-col gap-3">
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={!!a.legally_authorized} onChange={e => setAuth("legally_authorized", e.target.checked)} className="accent-void-accent" />
+            <input type="checkbox" checked={!!a.legally_authorized_to_work} onChange={e => setAuth("legally_authorized_to_work", e.target.checked)} className="accent-void-accent" />
             <span className="text-sm text-void-text">Legally authorized to work</span>
           </label>
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={!!a.needs_sponsorship} onChange={e => setAuth("needs_sponsorship", e.target.checked)} className="accent-void-accent" />
+            <input type="checkbox" checked={!!a.require_sponsorship} onChange={e => setAuth("require_sponsorship", e.target.checked)} className="accent-void-accent" />
             <span className="text-sm text-void-text">Requires visa sponsorship</span>
           </label>
-          <Field label="Permit type" value={a.permit_type ?? ""} onChange={v => setAuth("permit_type", v)} />
+          <Field label="Permit type" value={a.work_permit_type ?? ""} onChange={v => setAuth("work_permit_type", v)} />
         </div>
       </Section>
 

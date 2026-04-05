@@ -1,3 +1,10 @@
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export interface AuthResponse {
+  access_token: string;
+  token_type: string;
+}
+
 // ── Job ───────────────────────────────────────────────────────────────────────
 
 export interface Job {
@@ -114,29 +121,56 @@ export interface ApplyStatus {
 
 export interface Profile {
   personal?: {
-    name?: string;
+    full_name?: string;
+    preferred_name?: string;
     email?: string;
     phone?: string;
     city?: string;
+    province_state?: string;
     country?: string;
-    linkedin?: string;
-    github?: string;
-    portfolio?: string;
+    postal_code?: string;
+    linkedin_url?: string;
+    github_url?: string;
+    portfolio_url?: string;
+    website_url?: string;
   };
   work_authorization?: {
-    legally_authorized?: boolean;
-    needs_sponsorship?: boolean;
-    permit_type?: string;
-    target_regions?: string[];
+    legally_authorized_to_work?: boolean;
+    require_sponsorship?: boolean;
+    work_permit_type?: string;
   };
-  skills_boundary?: Record<string, string[]>;
+  availability?: {
+    earliest_start_date?: string;
+    available_for_full_time?: boolean;
+    available_for_contract?: boolean;
+  };
+  compensation?: {
+    salary_expectation?: string;
+    salary_currency?: string;
+    salary_range_min?: number;
+    salary_range_max?: number;
+  };
+  experience?: {
+    years_of_experience_total?: number;
+    education_level?: string;
+    current_job_title?: string;
+    current_company?: string;
+    target_role?: string;
+  };
+  skills_boundary?: {
+    languages?: string[];
+    frameworks?: string[];
+    devops?: string[];
+    databases?: string[];
+    tools?: string[];
+  };
   resume_facts?: {
-    companies?: string[];
-    projects?: string[];
-    school?: string;
-    metrics?: string[];
+    preserved_companies?: string[];
+    preserved_projects?: string[];
+    preserved_school?: string;
+    real_metrics?: string[];
   };
-  eeo?: Record<string, string>;
+  eeo_voluntary?: Record<string, string>;
 }
 
 // ── System Status ─────────────────────────────────────────────────────────────

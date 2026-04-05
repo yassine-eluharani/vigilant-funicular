@@ -5,13 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from applypilot.database import get_connection
+from applypilot.web.auth import get_current_user
 from applypilot.web.core import _start_task, decode_url, row_to_job
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------

@@ -3,6 +3,8 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ToastProvider } from "@/components/ui/Toast";
+import { AuthProvider } from "@/contexts/AuthContext";
+import { AppShell } from "@/components/layout/AppShell";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -27,12 +29,11 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} h-full`}>
       <body className="h-full flex bg-void-bg text-void-text antialiased">
-        <ToastProvider>
-          <Sidebar />
-          <main className="flex-1 min-w-0 overflow-y-auto">
-            {children}
-          </main>
-        </ToastProvider>
+        <AuthProvider>
+          <ToastProvider>
+            <AppShell>{children}</AppShell>
+          </ToastProvider>
+        </AuthProvider>
       </body>
     </html>
   );

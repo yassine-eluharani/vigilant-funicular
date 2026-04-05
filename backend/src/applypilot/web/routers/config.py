@@ -6,15 +6,16 @@ import json
 from pathlib import Path
 
 import yaml
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from applypilot.config import PROFILE_PATH, SEARCH_CONFIG_PATH, CONFIG_DIR, APP_DIR
+from applypilot.web.auth import get_current_user
 from applypilot.web.core import _start_task
 
 EMPLOYERS_PATH = CONFIG_DIR / "employers.yaml"
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +194,62 @@ def _extract_resume_text(pdf_path: Path) -> dict:
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
     return {"extracted": False}
+
+
+# ---------------------------------------------------------------------------
+# Resume CV parse (LLM extraction → profile fields)
+# ---------------------------------------------------------------------------
+
+@router.post("/api/config/resume/parse")
+async def parse_resume(request: Request) -> JSONResponse:
+    """Parse resume text with LLM and return extracted profile fields."""
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="No text provided")
+
+    from applypilot.llm import get_client
+    import asyncio, re as _re
+
+    prompt = (
+        "You are a resume parser. Extract structured information from the resume text below.\n"
+        "Return ONLY a valid JSON object with these exact keys (omit keys you cannot find):\n"
+        "{\n"
+        '  "full_name": "",\n'
+        '  "email": "",\n'
+        '  "phone": "",\n'
+        '  "city": "",\n'
+        '  "country": "",\n'
+        '  "linkedin_url": "",\n'
+        '  "github_url": "",\n'
+        '  "portfolio_url": "",\n'
+        '  "target_role": "",\n'
+        '  "years_of_experience_total": 0,\n'
+        '  "education_level": "",\n'
+        '  "skills": {"languages": [], "frameworks": [], "devops": [], "databases": [], "tools": []},\n'
+        '  "companies": [],\n'
+        '  "projects": [],\n'
+        '  "school": "",\n'
+        '  "metrics": []\n'
+        "}\n\n"
+        "Resume text:\n"
+        f"{text[:8000]}"
+    )
+
+    def _parse() -> str:
+        client = get_client()
+        return client.chat([{"role": "user", "content": prompt}], temperature=0.1)
+
+    try:
+        loop = asyncio.get_event_loop()
+        raw = await loop.run_in_executor(None, _parse)
+        match = _re.search(r"\{[\s\S]*\}", raw)
+        if not match:
+            raise ValueError("No JSON in response")
+        extracted = json.loads(match.group())
+        return JSONResponse({"ok": True, "extracted": extracted})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Parse failed: {e}")
 
 
 # ---------------------------------------------------------------------------

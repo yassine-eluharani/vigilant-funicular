@@ -6,12 +6,13 @@ import asyncio
 import json
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from applypilot.web.auth import get_current_user
 from applypilot.web.core import _tasks
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",

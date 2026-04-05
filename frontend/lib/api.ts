@@ -6,7 +6,9 @@ import type {
   ApplyStatus,
   Profile,
   SystemStatus,
+  AuthResponse,
 } from "./types";
+import { getToken, clearToken } from "./auth";
 
 // Use NEXT_PUBLIC_API_URL in browser, fallback to relative for SSR behind nginx
 const BASE =
@@ -15,16 +17,31 @@ const BASE =
     : (process.env.API_URL ?? "http://backend:8000");
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
+  const token = getToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string>),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { ...init, headers });
+
+  if (res.status === 401) {
+    clearToken();
+    if (typeof window !== "undefined") window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText);
     throw new Error(err || `HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+
+export const login = (password: string): Promise<AuthResponse> =>
+  req("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -142,11 +159,21 @@ export const updateResumeText = (text: string) =>
   req("/api/config/resume", { method: "PUT", body: JSON.stringify({ text }) });
 
 export async function uploadResumePdf(file: File): Promise<{ ok: boolean; size: number; task_id: string }> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${BASE}/api/config/resume/upload`, { method: "POST", body: form });
+  const res = await fetch(`${BASE}/api/config/resume/upload`, { method: "POST", body: form, headers });
   if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
   return res.json();
+}
+
+export async function parseResumeCv(text: string): Promise<{ ok: boolean; extracted: Partial<Profile> }> {
+  return req("/api/config/resume/parse", {
+    method: "POST",
+    body: JSON.stringify({ text }),
+  });
 }
 
 // ── System ────────────────────────────────────────────────────────────────────

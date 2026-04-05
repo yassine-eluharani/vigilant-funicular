@@ -2,7 +2,7 @@
 name = "applypilot"
 version = "1.0.0"
 description = "AI-powered end-to-end job application pipeline"
-readme = "../README.md"
+readme = {text = "AI-powered end-to-end job application pipeline.", content-type = "text/plain"}
 license = "AGPL-3.0-only"
 requires-python = ">=3.11"
 authors = [{name = "Yassine Eluharani", email = "eluharani.yassine@gmail.com"}]
@@ -27,6 +27,8 @@ dependencies = [
     "uvicorn[standard]>=0.29.0",
     "python-multipart>=0.0.9",
     "rich>=13.0",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
 ]
 
 [project.optional-dependencies]

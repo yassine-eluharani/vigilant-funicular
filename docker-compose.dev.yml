@@ -16,6 +16,8 @@ services:
       - APPLYPILOT_DIR=/data
       - PYTHONUNBUFFERED=1
       - CORS_ORIGINS=http://localhost:3000
+      - APP_PASSWORD=${APP_PASSWORD:-changeme}
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
     restart: "no"
 
   frontend:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from applypilot.web.auth import get_current_user
 from applypilot.web.core import _tasks, _start_task
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 def _do_run_pipeline(stages: list[str], min_score: int, workers: int,

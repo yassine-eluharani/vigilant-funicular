@@ -7,12 +7,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml .
+COPY src ./src
 RUN pip install --no-cache-dir -e ".[prod]"
 
 # Install Playwright Chromium for PDF generation
 RUN playwright install chromium --with-deps
-
-COPY src ./src
 
 # ── Development stage ─────────────────────────────────────────────────────────
 FROM base AS development
