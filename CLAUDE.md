@@ -2,64 +2,77 @@
 
 AI-powered job application automation pipeline. Discovers jobs, scores them against your profile, tailors resumes, generates cover letters, and auto-submits applications via browser automation.
 
+**This is a fullstack monorepo** — Next.js frontend + FastAPI backend + Docker.
+
 ## Tech Stack
 
-- Python 3.11+, Typer CLI, SQLite (WAL mode), Playwright, FastAPI
-- LLM: Gemini (default), OpenAI, or local (Ollama/llama.cpp) — auto-detected from env vars
-- Auto-apply: Claude Code CLI + Chrome CDP + Playwright MCP server
+- **Frontend**: Next.js 16 (App Router), React 19, Tailwind CSS v4, TypeScript
+- **Backend**: Python 3.11+, FastAPI, SQLite (WAL mode), Playwright, Rich
+- **LLM**: Gemini (default), OpenAI, or local (Ollama/llama.cpp) — auto-detected from env vars
+- **Auto-apply**: Claude Code CLI + Chrome CDP + Playwright MCP server
+- **Infra**: Docker + Docker Compose (dev + prod), nginx reverse proxy
 
 ## Project Layout
 
 ```
-src/applypilot/
-├── cli.py                  # Typer CLI — entry point (init, run, apply, status, dashboard)
-├── config.py               # Paths (~/.applypilot/), tier system, env loading
-├── database.py             # SQLite schema (single `jobs` table), thread-local connections
-├── pipeline.py             # 6-stage orchestrator (sequential or streaming)
-├── llm.py                  # Unified LLM client with Gemini dual-API fallback
-├── view.py                 # Static HTML dashboard generator
-├── discovery/
-│   ├── jobspy.py           # Indeed, LinkedIn, Glassdoor, ZipRecruiter, Google
-│   ├── workday.py          # Workday ATS API scraper (48+ employers)
-│   ├── smartextract.py     # AI-powered arbitrary website scraper
-│   └── filter.py           # Pre-scoring location/country filter (regex patterns)
-├── enrichment/
-│   └── detail.py           # Full description + apply URL (JSON-LD → CSS → LLM cascade)
-├── scoring/
-│   ├── scorer.py           # Job fit scoring (1-10 scale)
-│   ├── tailor.py           # Resume tailoring (structured JSON output)
-│   ├── cover_letter.py     # Cover letter generation
-│   ├── pdf.py              # HTML → PDF conversion via Playwright
-│   └── validator.py        # Banned words, fabrication detection, LLM leak phrases
-├── apply/
-│   ├── launcher.py         # Job acquisition, Claude Code process spawning
-│   ├── chrome.py           # Chrome lifecycle, CDP port management, profile cloning
-│   ├── prompt.py           # Prompt generation for form filling
-│   └── dashboard.py        # Live apply status tracking
-├── wizard/
-│   └── init.py             # First-time setup wizard
-├── web/
-│   └── server.py           # FastAPI live dashboard (stats, job list, log streaming)
-└── config/
-    ├── employers.yaml      # Workday employer definitions
-    ├── sites.yaml          # Direct career sites + blocked sites
-    └── searches.example.yaml
+applypilot/
+├── backend/
+│   ├── src/applypilot/
+│   │   ├── web/
+│   │   │   ├── server.py           # FastAPI app entry point
+│   │   │   ├── core.py             # Shared task registry, URL helpers
+│   │   │   └── routers/            # jobs, pipeline, config, apply, stream
+│   │   ├── discovery/              # jobspy, workday, smartextract, filter
+│   │   ├── enrichment/detail.py    # Full description + apply URL cascade
+│   │   ├── scoring/                # scorer, tailor, cover_letter, pdf, validator
+│   │   ├── apply/                  # launcher, chrome, prompt, dashboard
+│   │   ├── config/                 # employers.yaml, sites.yaml, searches.example.yaml
+│   │   ├── database.py             # SQLite schema, thread-local connections
+│   │   ├── llm.py                  # Unified LLM client (Gemini/OpenAI/local)
+│   │   ├── pipeline.py             # 7-stage pipeline orchestrator
+│   │   └── config.py               # Paths (APPLYPILOT_DIR), tier system
+│   ├── pyproject.toml
+│   └── Dockerfile
+├── frontend/
+│   ├── app/
+│   │   ├── layout.tsx              # Root layout: Sidebar + ToastProvider
+│   │   ├── jobs/page.tsx           # Jobs Dashboard
+│   │   ├── pipeline/page.tsx       # Pipeline Control
+│   │   ├── profile/page.tsx        # Profile & Config (5 tabs)
+│   │   └── apply/page.tsx          # Apply Tracker
+│   ├── components/
+│   │   ├── ui/Toast.tsx            # Global toast notifications
+│   │   ├── layout/Sidebar.tsx      # Navigation sidebar
+│   │   ├── jobs/                   # JobCard, JobFilters, JobDetailDrawer, ScoreBadge
+│   │   ├── pipeline/               # StageSelector, LogStream, FunnelChart
+│   │   └── apply/                  # WorkerCard (inline in page)
+│   ├── lib/
+│   │   ├── api.ts                  # Typed fetch wrappers for all endpoints
+│   │   ├── types.ts                # Job, Stats, Task, WorkerState, Profile, SystemStatus
+│   │   └── hooks/                  # useJobs, useStats, useSSE, useApplyWorkers
+│   ├── next.config.ts              # output: standalone, /api proxy rewrite
+│   └── Dockerfile
+├── nginx/
+│   ├── nginx.conf                  # /api/ → backend, /* → frontend, SSE-safe
+│   └── Dockerfile
+├── docker-compose.yml              # Base (shared services, data volume)
+├── docker-compose.dev.yml          # Hot reload, direct ports, no nginx
+├── docker-compose.prod.yml         # Optimized builds, nginx on :80/:443
+├── data/                           # Bind-mounted volume: DB, profile, resumes
+└── .env.example
 ```
 
 ## Pipeline Stages
 
-Run with `applypilot run [stages...]` or `applypilot run` for all.
-
 1. **discover** — Scrape job boards + Workday portals + custom sites → store URLs in DB
-2. **enrich** — Fetch full descriptions and apply URLs (3-tier cascade: JSON-LD → CSS → LLM)
-3. **filter** — Pre-scoring location/country filter via regex patterns (saves LLM tokens)
-4. **score** — LLM scores job-candidate fit 1-10 using profile + resume
+2. **enrich** — Fetch full descriptions and apply URLs (3-tier: JSON-LD → CSS → LLM)
+3. **filter** — Pre-scoring location/country filter via regex (saves LLM tokens)
+4. **score** — LLM scores job-candidate fit 1–10 using profile + resume
 5. **tailor** — LLM generates tailored resume JSON (max 5 retries, validated)
 6. **cover** — LLM generates cover letter (max 5 retries, validated)
 7. **pdf** — Convert tailored resumes/cover letters to PDF
-8. **apply** — Auto-submit via `applypilot apply` (Chrome + Claude Code, parallel workers)
 
-## User Config (`~/.applypilot/`)
+## User Config (mounted at `data/` → `/data` in Docker)
 
 - `profile.json` — Name, email, location, work auth, skills, resume facts, EEO
 - `searches.yaml` — Queries, locations, boards, title filters, location filters
@@ -68,34 +81,42 @@ Run with `applypilot run [stages...]` or `applypilot run` for all.
 
 ## Tier System
 
-- **Tier 1** (Discovery): Python only → init, discover, enrich, status, dashboard
-- **Tier 2** (AI Scoring): + LLM API key → score, tailor, cover, pdf, run
-- **Tier 3** (Auto-Apply): + Claude Code CLI + Chrome + Node.js → apply
+- **Tier 1** (Discovery): Python only → discover, enrich, filter
+- **Tier 2** (AI Scoring): + LLM API key → score, tailor, cover, pdf
+- **Tier 3** (Auto-Apply): + Claude Code CLI + Chrome → apply
 
 ## Key Patterns
 
+- **Config path**: `APPLYPILOT_DIR` env var (defaults to `~/.applypilot`, set to `/data` in Docker)
 - **Database**: Single `jobs` table, URL as primary key, SQLite WAL mode, thread-local connections
 - **LLM client**: Auto-detects provider from env vars. Gemini tries OpenAI-compat first, falls back to native API on 403/404. Exponential backoff on rate limits.
 - **Validation**: 42 banned words, 20 LLM leak phrases, fabrication watchlist. Modes: strict/normal/lenient.
-- **Parallelism**: `--workers N` for discovery/enrichment (ThreadPoolExecutor) and apply (separate Chrome instances). `--stream` runs stages concurrently.
-- **Deduplication**: By URL (primary key). Duplicate check on store.
-
-## Commands
-
-```bash
-applypilot init                     # Setup wizard
-applypilot doctor                   # Verify setup
-applypilot run [stages...]          # Run pipeline (--workers, --stream, --min-score, --validation, --dry-run)
-applypilot apply                    # Auto-submit (--workers, --continuous, --headless, --limit)
-applypilot status                   # Pipeline stats
-applypilot dashboard                # Open HTML dashboard
-```
+- **SSE**: `/api/stream/task/{id}` for pipeline logs, `/api/stream/apply` for worker state
+- **Apply workers**: Run in separate subprocess (`multiprocessing.Process`) to avoid FastAPI signal conflicts
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-playwright install chromium
-pytest tests/ -v
-ruff check src/
+# Start dev environment
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+# Backend only (no Docker)
+cd backend && pip install -e ".[dev]"
+APPLYPILOT_DIR=./data uvicorn applypilot.web.server:app --reload --port 8000
+
+# Frontend only (no Docker)
+cd frontend && npm install && npm run dev
+
+# API docs (dev only)
+open http://localhost:8000/api/docs
+```
+
+## Production
+
+```bash
+# Build and start prod
+mkdir -p data
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+
+# Access: http://localhost (nginx on port 80)
 ```
