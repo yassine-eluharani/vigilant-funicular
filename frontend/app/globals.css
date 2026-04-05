@@ -1,0 +1,132 @@
+@import "tailwindcss";
+
+/* ── Void Design System ───────────────────────��───────────────────────────── */
+
+@theme {
+  /* Backgrounds */
+  --color-void-bg:       #07080d;
+  --color-void-surface:  #0e1117;
+  --color-void-raised:   #161b27;
+
+  /* Borders */
+  --color-void-border:   #1e2537;
+  --color-void-border-subtle: #131924;
+
+  /* Accents */
+  --color-void-accent:   #6366f1;
+  --color-void-success:  #10b981;
+  --color-void-warning:  #f59e0b;
+  --color-void-danger:   #ef4444;
+  --color-void-teal:     #14b8a6;
+
+  /* Text */
+  --color-void-text:     #e2e8f0;
+  --color-void-muted:    #64748b;
+  --color-void-subtle:   #334155;
+
+  /* Score colors */
+  --color-score-9:  #6366f1;
+  --color-score-8:  #10b981;
+  --color-score-7:  #14b8a6;
+  --color-score-6:  #f59e0b;
+  --color-score-low: #475569;
+
+  /* Fonts */
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "Fira Code", "Cascadia Code", monospace;
+}
+
+/* ── Base ─────────────────────────────────────────────────────────────────── */
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-void-bg);
+  color: var(--color-void-text);
+}
+
+/* ── Scrollbars ───────────────────────────────────────────────��───────────── */
+
+::-webkit-scrollbar        { width: 5px; height: 5px; }
+::-webkit-scrollbar-track  { background: var(--color-void-surface); }
+::-webkit-scrollbar-thumb  { background: var(--color-void-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-void-subtle); }
+
+/* ── Animations ───────────────────────────────────────────────────────────── */
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes slide-in-right {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.animate-fade-in        { animation: fade-in 0.18s ease-out; }
+.animate-slide-in-right { animation: slide-in-right 0.22s ease-out; }
+.animate-spin-slow      { animation: spin-slow 1.4s linear infinite; }
+
+/* ── Skeleton loader ──────────────────────────────────────────────────────── */
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--color-void-surface) 25%,
+    var(--color-void-raised) 50%,
+    var(--color-void-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+  border-radius: 4px;
+}
+
+/* ── Score ring (CSS only, no chart lib) ─────────────────────────────────── */
+
+.score-ring {
+  --size: 2.5rem;
+  --stroke: 3px;
+  width: var(--size);
+  height: var(--size);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 700;
+  border: var(--stroke) solid currentColor;
+  flex-shrink: 0;
+}
+
+/* ── Log terminal ──────────────────────────────────────────────────────────�� */
+
+.log-terminal {
+  background: #050608;
+  color: #4ade80;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  padding: 1rem;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-terminal .log-error { color: #f87171; }
+.log-terminal .log-warn  { color: #fbbf24; }
+.log-terminal .log-info  { color: #4ade80; }
