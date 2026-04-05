@@ -1,0 +1,101 @@
+Yassine Eluharani
+Senior Cloud Engineer (Azure & AWS)
+eluharani.yassine@gmail.com — Casablanca, Morocco — +212 644 928 582 — linkedin profile — github
+Professional Summary
+Senior Cloud & Full Stack Engineer with strong experience designing and delivering cloud-native integra-
+tion platforms and distributed backend systems on Azure and AWS. Specialized in large-scale enterprise
+system migration, event-driven architectures, and API-centric middleware, with end-to-end ownership from
+architecture design (HLD/LLD) through implementation, deployment, and operations. Proven ability to
+modernize legacy platforms, build scalable data pipelines, and mentor junior engineers in production envi-
+ronments.
+Core Competencies
+Cloud Architecture • Azure Integration Services • Event-Driven Systems • API Management • Enterprise
+System Migration • Distributed Systems • Middleware Design • CI/CD Pipelines • Infrastructure as Code
+• Secure Cloud Platforms • High-Availability Systems • Technical Documentation (HLD/LLD)
+Work Experience
+Senior Cloud Consultant — Deloitte Feb 2024 – Present
+Casablanca, Morocco
+• Accomplished modernization of legacy enterprise integrations as measured by improved scalability and
+maintainability, by migrating BizTalk-based workflows to Azure Logic Apps and Azure Functions using
+cloud-native, event-driven architectures.
+• Accomplished reduction of upstream API dependency as measured by increased system resilience, by
+architecting an MDM replication platform using ADLS and Synapse as a spot database.
+• Accomplished reliable high-volume enterprise data ingestion pipelines as measured by consistent full and
+delta loads, by designing a multi-stage pipeline using APIM-proxied APIs, paginated extraction, blob-
+based batching, and Service Bus fan-out.
+• Accomplished end-to-end data propagation as measured by stable message delivery, by implementing
+Service Bus topics, subscriptions, routing rules, and idempotent Logic App workflows.
+• Accomplished standardized API security as measured by centralized authentication handling, by enforcing
+Azure API Management policies for OAuth2, Basic Auth, routing, and throttling.
+• Accomplished faster onboarding of new data objects as measured by reduced setup effort, by designing
+automated setup and pull-data endpoints that provision required infrastructure before execution.
+• Accomplished secure configuration management as measured by reduced credential exposure, by central-
+izing secrets in Azure Key Vault and integrating them across Logic Apps, Functions, and pipelines.
+• Accomplished successful delivery of business requests as measured by production rollouts, by owning
+architecture design, authoring HLD/LLD, technical specifications, operational runbooks, and deploying
+via Azure DevOps CI/CD.
+• Accomplished effective stakeholder collaboration as measured by successful delivery of client-facing inte-
+grations, by working directly with business, technical leads, and external system owners across multiple
+teams.
+1
+• Accomplished team scalability as measured by smoother onboarding, by mentoring junior engineers and
+guiding them on Azure integration best practices.
+Technical Environment: Azure Logic Apps, Azure Functions, API Management, Service Bus, Cosmos DB,
+ADLS, Synapse Analytics, Storage Accounts, Key Vault, Azure DevOps.
+Full Stack Developer (Backend-Heavy) — Metaverse Feb 2023 – Feb 2024
+Casablanca, Morocco
+• Accomplished PCI DSS compliance as measured by successful audit approval, by architecting and imple-
+menting a secure, multi-tier AWS infrastructure for payment workloads.
+• Accomplished production-grade payment processing as measured by successful real-money transactions,
+by building backend services integrating Stripe and Fiserv with resilient webhook handling.
+• Accomplished backend scalability as measured by stable traffic handling, by deploying Node.js services
+on Auto Scaling EC2 groups behind an Application Load Balancer.
+• Accomplished strong data security as measured by encrypted data at rest, by implementing AWS KMS-
+backed encryption for RDS databases in private VPC subnets.
+• Accomplished faster infrastructure provisioning as measured by reusable deployments, by authoring Ter-
+raform modules for environment setup and disaster recovery.
+• Accomplished consistent microservice delivery as measured by deployment reliability, by containerizing
+services with Docker and orchestrating them on AWS EKS using ECR.
+Technical Environment: Node.js, Express.js, React, Next.js, AWS (EC2, EKS, ALB, RDS, VPC, KMS,
+WAF, S3), Terraform, Docker, Kubernetes, RabbitMQ, Stripe, Fiserv.
+Full Stack Developer — Sasse & Mertins Jan 2022 – Jan 2023
+Berlin, Germany (Remote)
+• Accomplished faster backend feature delivery as measured by reduced development cycles, by building
+scalable RESTful APIs using Spring Boot in a microservices architecture.
+• Accomplished improved system reliability as measured by fewer post-deployment defects, by applying
+Test-Driven Development and writing comprehensive unit tests.
+• Accomplished stable service integration as measured by reduced regressions, by implementing Consumer-
+Driven Contract testing between services.
+• Accomplished higher code quality as measured by automated quality gates, by integrating CI/CD pipelines
+with Bitbucket and SonarCloud.
+• Accomplished cost-efficient scalability as measured by optimized deployments, by deploying containerized
+services to AWS Fargate.
+Technical Environment: Java, Spring Boot, React, Jest, TDD, AWS Fargate, Bitbucket, SonarCloud.
+Personal Projects
+Full-Stack Vacation Rental Mobile Application In Development
+• Accomplished end-to-end marketplace functionality as measured by feature completeness, by building a
+React Native application with distinct Guest and Host experiences.
+• Accomplished scalable backend design as measured by clean domain separation, by developing a Node.js/Express
+API backed by PostgreSQL.
+2
+• Accomplished booking and messaging workflows as measured by user-facing functionality, by implementing
+search, calendars, booking approvals, and REST-based in-app chat.
+• Accomplished secure authentication flows as measured by OTP-based access, by integrating Clerk for
+phone-based authentication.
+Skills
+Programming Languages: Python, TypeScript, JavaScript, Java
+Cloud Platforms:
+• Azure: Logic Apps, Functions, API Management, Service Bus, Cosmos DB, ADLS, Synapse, Key Vault,
+Azure DevOps
+• AWS: EC2, EKS, Fargate, RDS, S3, VPC, ALB, KMS, WAF, Lambda
+Web & Backend: Node.js, Express.js, React, React Native, Next.js, Spring Boot, REST APIs, GraphQL
+DevOps & Tooling: Terraform, Docker, Kubernetes, CI/CD, Git, Linux, Bash, RabbitMQ
+Databases: PostgreSQL, SQL Server, MySQL, MongoDB, Oracle PL/SQL
+Education & Certifications
+AZ-104: Microsoft Certified Azure Administrator Associate 2024
+Computer Engineering — Information Systems 2022
+Universit´e Internationale de Casablanca — Casablanca, Morocco
+Bachelor in Business Informatics 2020
+Universit´e Internationale de Casablanca — Casablanca, Morocco
+3
+

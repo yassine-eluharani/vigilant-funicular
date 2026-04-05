@@ -1,0 +1,223 @@
+employers:
+  salesforce:
+    name: Salesforce
+    tenant: salesforce
+    site_id: External_Career_Site
+    base_url: https://salesforce.wd12.myworkdayjobs.com
+    enabled: false
+  servicenow:
+    name: ServiceNow
+    tenant: servicenow
+    site_id: ServiceNowCareers
+    base_url: https://servicenow.wd1.myworkdayjobs.com
+    enabled: false
+  cisco:
+    name: Cisco
+    tenant: cisco
+    site_id: Cisco_Careers
+    base_url: https://cisco.wd5.myworkdayjobs.com
+    enabled: false
+  sap:
+    name: SAP
+    tenant: sap
+    site_id: SAP
+    base_url: https://sap.wd3.myworkdayjobs.com
+    enabled: false
+  nvidia:
+    name: NVIDIA
+    tenant: nvidia
+    site_id: NVIDIAExternalCareerSite
+    base_url: https://nvidia.wd5.myworkdayjobs.com
+    enabled: false
+  adobe:
+    name: Adobe
+    tenant: adobe
+    site_id: external_experienced
+    base_url: https://adobe.wd5.myworkdayjobs.com
+    enabled: false
+  intel:
+    name: Intel
+    tenant: intel
+    site_id: External
+    base_url: https://intel.wd1.myworkdayjobs.com
+    enabled: false
+  dell:
+    name: Dell Technologies
+    tenant: dell
+    site_id: External
+    base_url: https://dell.wd1.myworkdayjobs.com
+    enabled: false
+  hpe:
+    name: HPE
+    tenant: hpe
+    site_id: Jobpostings
+    base_url: https://hpe.wd5.myworkdayjobs.com
+    enabled: false
+  redhat:
+    name: Red Hat
+    tenant: redhat
+    site_id: Jobs
+    base_url: https://redhat.wd5.myworkdayjobs.com
+    enabled: false
+  paloalto:
+    name: Palo Alto Networks
+    tenant: paloaltonetworks
+    site_id: External
+    base_url: https://paloaltonetworks.wd1.myworkdayjobs.com
+    enabled: false
+  workday:
+    name: Workday
+    tenant: workday
+    site_id: Workday
+    base_url: https://workday.wd5.myworkdayjobs.com
+    enabled: false
+  docusign:
+    name: DocuSign
+    tenant: docusign
+    site_id: External
+    base_url: https://docusign.wd5.myworkdayjobs.com
+    enabled: false
+  ericsson:
+    name: Ericsson
+    tenant: ericsson
+    site_id: ExternalCareers
+    base_url: https://ericsson.wd1.myworkdayjobs.com
+    enabled: false
+  nokia:
+    name: Nokia
+    tenant: nokia
+    site_id: External
+    base_url: https://nokia.wd3.myworkdayjobs.com
+    enabled: false
+  capgemini:
+    name: Capgemini
+    tenant: capgemini
+    site_id: Capgemini_Careers
+    base_url: https://capgemini.wd3.myworkdayjobs.com
+    enabled: false
+  cognizant:
+    name: Cognizant
+    tenant: cognizant
+    site_id: CTS_External_Career_Website
+    base_url: https://cognizant.wd1.myworkdayjobs.com
+    enabled: false
+  infosys:
+    name: Infosys
+    tenant: infosys
+    site_id: infjobs
+    base_url: https://infosys.wd3.myworkdayjobs.com
+    enabled: false
+  wipro:
+    name: Wipro
+    tenant: wipro
+    site_id: External
+    base_url: https://wipro.wd3.myworkdayjobs.com
+    enabled: false
+  hcltech:
+    name: HCL Technologies
+    tenant: hcltech
+    site_id: hcltech
+    base_url: https://hcltech.wd3.myworkdayjobs.com
+    enabled: false
+  pwc:
+    name: PwC
+    tenant: pwc
+    site_id: Global_Experienced_Careers
+    base_url: https://pwc.wd3.myworkdayjobs.com
+    enabled: false
+  deloitte:
+    name: Deloitte
+    tenant: deloitte
+    site_id: External
+    base_url: https://deloitte.wd1.myworkdayjobs.com
+    enabled: false
+  ey:
+    name: EY
+    tenant: ey
+    site_id: EY_External_Careers
+    base_url: https://ey.wd5.myworkdayjobs.com
+    enabled: false
+  kpmg:
+    name: KPMG
+    tenant: kpmg
+    site_id: External
+    base_url: https://kpmg.wd1.myworkdayjobs.com
+    enabled: false
+  neom:
+    name: NEOM
+    tenant: neom
+    site_id: NEOM
+    base_url: https://neom.wd3.myworkdayjobs.com
+    enabled: false
+  aramco:
+    name: Saudi Aramco
+    tenant: aramco
+    site_id: Aramco_External
+    base_url: https://aramco.wd3.myworkdayjobs.com
+    enabled: false
+  sabic:
+    name: SABIC
+    tenant: sabic
+    site_id: External
+    base_url: https://sabic.wd3.myworkdayjobs.com
+    enabled: false
+  stc:
+    name: STC (Saudi Telecom)
+    tenant: stcgroup
+    site_id: External
+    base_url: https://stcgroup.wd3.myworkdayjobs.com
+    enabled: false
+  eand:
+    name: e& (Etisalat)
+    tenant: eand
+    site_id: External
+    base_url: https://eand.wd3.myworkdayjobs.com
+    enabled: false
+  du:
+    name: du Telecom
+    tenant: du
+    site_id: External
+    base_url: https://du.wd3.myworkdayjobs.com
+    enabled: false
+  g42:
+    name: G42 (UAE AI)
+    tenant: g42
+    site_id: External
+    base_url: https://g42.wd3.myworkdayjobs.com
+    enabled: false
+  mubadala:
+    name: Mubadala
+    tenant: mubadala
+    site_id: External
+    base_url: https://mubadala.wd3.myworkdayjobs.com
+    enabled: false
+  adnoc:
+    name: ADNOC
+    tenant: adnoc
+    site_id: External
+    base_url: https://adnoc.wd3.myworkdayjobs.com
+    enabled: false
+  emirates:
+    name: Emirates Group
+    tenant: emiratesgroup
+    site_id: External
+    base_url: https://emiratesgroup.wd3.myworkdayjobs.com
+    enabled: false
+  mastercard:
+    name: Mastercard
+    tenant: mastercard
+    site_id: CorporateCareers
+    base_url: https://mastercard.wd1.myworkdayjobs.com
+    enabled: false
+  paypal:
+    name: PayPal
+    tenant: paypal
+    site_id: jobs
+    base_url: https://paypal.wd1.myworkdayjobs.com
+    enabled: false
+  fis:
+    name: FIS Global
+    tenant: fis
+    site_id: SearchJobs
+    base_url: https://fis.wd5.myworkdayjobs.com
+    enabled: false
