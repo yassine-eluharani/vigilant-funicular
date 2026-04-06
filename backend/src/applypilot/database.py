@@ -88,6 +88,17 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     conn = get_connection(path)
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            email         TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            full_name     TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            last_login    TEXT
+        )
+    """)
+
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             -- Discovery stage (smart_extract / job_search)
             url                   TEXT PRIMARY KEY,

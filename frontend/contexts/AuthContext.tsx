@@ -4,17 +4,27 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import { useRouter } from "next/navigation";
 import { getToken, setToken, clearToken, isTokenValid } from "@/lib/auth";
 
+interface User {
+  id: string;
+  email: string;
+  full_name: string;
+}
+
 interface AuthContextValue {
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (password: string) => Promise<{ ok: boolean; error?: string }>;
+  user: User | null;
+  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  register: (fullName: string, email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue>({
   isAuthenticated: false,
   isLoading: true,
+  user: null,
   login: async () => ({ ok: false }),
+  register: async () => ({ ok: false }),
   logout: () => {},
 });
 
@@ -27,45 +37,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<User | null>(null);
 
-  // On mount: check if stored token is still valid
+  // On mount: validate stored token
   useEffect(() => {
     const token = getToken();
     if (!isTokenValid(token)) {
       clearToken();
-      setIsAuthenticated(false);
       setIsLoading(false);
       return;
     }
-    // Ping backend to confirm token is accepted
     fetch(`${BASE}/api/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
     })
-      .then((r) => {
-        setIsAuthenticated(r.ok);
-        if (!r.ok) clearToken();
+      .then(async (r) => {
+        if (r.ok) {
+          const data = await r.json();
+          setUser({ id: data.id, email: data.email, full_name: data.full_name });
+          setIsAuthenticated(true);
+        } else {
+          clearToken();
+        }
       })
       .catch(() => {
-        // Network error — treat as authenticated if token looks valid
-        // (allows offline/slow-start scenarios)
-        setIsAuthenticated(true);
+        // Network issue — trust token expiry check
+        if (isTokenValid(token)) setIsAuthenticated(true);
+        else clearToken();
       })
       .finally(() => setIsLoading(false));
   }, []);
 
-  const login = useCallback(async (password: string) => {
+  const login = useCallback(async (email: string, password: string) => {
     try {
       const res = await fetch(`${BASE}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        return { ok: false, error: body.detail ?? "Incorrect password" };
+        return { ok: false, error: body.detail ?? "Incorrect email or password" };
       }
-      const { access_token } = await res.json();
+      const { access_token, user: u } = await res.json();
       setToken(access_token);
+      setUser(u);
+      setIsAuthenticated(true);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: "Could not reach the server" };
+    }
+  }, []);
+
+  const register = useCallback(async (fullName: string, email: string, password: string) => {
+    try {
+      const res = await fetch(`${BASE}/api/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full_name: fullName, email, password }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { ok: false, error: body.detail ?? "Registration failed" };
+      }
+      const { access_token, user: u } = await res.json();
+      setToken(access_token);
+      setUser(u);
       setIsAuthenticated(true);
       return { ok: true };
     } catch {
@@ -76,11 +112,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     clearToken();
     setIsAuthenticated(false);
-    router.push("/login");
+    setUser(null);
+    router.push("/");
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, user, login, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

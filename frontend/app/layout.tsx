@@ -1,10 +1,8 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/layout/Sidebar";
 import { ToastProvider } from "@/components/ui/Toast";
 import { AuthProvider } from "@/contexts/AuthContext";
-import { AppShell } from "@/components/layout/AppShell";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -19,8 +17,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "ApplyPilot",
-  description: "AI-powered job application pipeline",
+  title: "ApplyPilot — AI-Powered Job Applications",
+  description: "Discover, score, tailor, and auto-submit job applications with AI. Apply to 100+ jobs overnight.",
 };
 
 export default function RootLayout({
@@ -28,10 +26,10 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} h-full`}>
-      <body className="h-full flex bg-void-bg text-void-text antialiased">
+      <body className="h-full bg-void-bg text-void-text antialiased">
         <AuthProvider>
           <ToastProvider>
-            <AppShell>{children}</AppShell>
+            {children}
           </ToastProvider>
         </AuthProvider>
       </body>

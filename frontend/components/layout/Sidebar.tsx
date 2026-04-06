@@ -53,7 +53,7 @@ const NAV = [
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
 
   return (
     <aside className="flex flex-col w-52 shrink-0 border-r border-void-border bg-void-surface h-full">
@@ -101,7 +101,12 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="px-3 py-3 border-t border-void-border flex items-center justify-between gap-2">
-        <p className="text-xs text-void-muted font-mono">v1.0.0</p>
+        <div className="min-w-0">
+          {user ? (
+            <p className="text-xs text-void-text truncate font-medium">{user.full_name}</p>
+          ) : null}
+          <p className="text-xs text-void-subtle font-mono">v1.0.0</p>
+        </div>
         <button
           onClick={logout}
           title="Sign out"

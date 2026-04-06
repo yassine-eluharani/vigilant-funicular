@@ -40,8 +40,11 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-export const login = (password: string): Promise<AuthResponse> =>
-  req("/api/auth/login", { method: "POST", body: JSON.stringify({ password }) });
+export const login = (email: string, password: string): Promise<AuthResponse> =>
+  req("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
+
+export const registerUser = (full_name: string, email: string, password: string): Promise<AuthResponse> =>
+  req("/api/auth/register", { method: "POST", body: JSON.stringify({ full_name, email, password }) });
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 

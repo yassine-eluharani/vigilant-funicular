@@ -1,47 +1,44 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
 
-function LoginForm() {
+export default function RegisterPage() {
   const router = useRouter();
-  const params = useSearchParams();
-  const { login, isAuthenticated, isLoading } = useAuth();
+  const { register } = useAuth();
 
+  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    if (!isLoading && isAuthenticated) {
-      router.replace(params.get("next") ?? "/jobs");
-    }
-  }, [isAuthenticated, isLoading, router, params]);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    setSubmitting(true);
-    const result = await login(email, password);
-    setSubmitting(false);
-    if (!result.ok) {
-      setError(result.error ?? "Incorrect email or password");
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters");
       return;
     }
-    router.replace(params.get("next") ?? "/jobs");
+    setSubmitting(true);
+    const result = await register(fullName, email, password);
+    setSubmitting(false);
+    if (!result.ok) {
+      setError(result.error ?? "Registration failed");
+      return;
+    }
+    // New user → go to setup wizard
+    router.replace("/setup");
   };
-
-  if (isLoading) return null;
 
   return (
     <div className="min-h-screen flex">
-      {/* Left panel — branding */}
+      {/* Left branding panel */}
       <div className="hidden lg:flex flex-col justify-between w-[45%] bg-void-surface border-r border-void-border p-12 relative overflow-hidden">
         <div className="absolute inset-0 pointer-events-none">
-          <div className="absolute bottom-1/4 left-1/2 -translate-x-1/2 w-[400px] h-[400px] bg-void-accent/8 rounded-full blur-[100px]" />
+          <div className="absolute top-1/3 left-1/2 -translate-x-1/2 w-[400px] h-[400px] bg-void-success/6 rounded-full blur-[100px]" />
         </div>
         <Link href="/" className="relative flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-void-accent flex items-center justify-center">
@@ -52,23 +49,27 @@ function LoginForm() {
           <span className="font-semibold text-void-text">ApplyPilot</span>
         </Link>
 
-        <div className="relative">
-          <blockquote className="text-xl font-medium text-void-text leading-relaxed mb-6">
-            &ldquo;Woke up to 34 tailored applications submitted overnight. Three interviews by lunch.&rdquo;
-          </blockquote>
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-full bg-void-accent/20 border border-void-accent/30 flex items-center justify-center text-sm font-bold text-void-accent">Y</div>
-            <div>
-              <p className="text-sm font-medium text-void-text">Yassine E.</p>
-              <p className="text-xs text-void-muted">Software Engineer</p>
+        <div className="relative space-y-6">
+          {[
+            { icon: "🔍", title: "Discover 200+ jobs", desc: "Across all major boards and Workday portals" },
+            { icon: "🤖", title: "AI scores every role", desc: "1–10 fit score against your profile, instantly" },
+            { icon: "📄", title: "Tailored resume + cover", desc: "Generated per job, validated, exported to PDF" },
+            { icon: "🚀", title: "Auto-submit overnight", desc: "Browser workers apply while you sleep" },
+          ].map(({ icon, title, desc }) => (
+            <div key={title} className="flex items-start gap-3">
+              <span className="text-xl">{icon}</span>
+              <div>
+                <p className="text-sm font-medium text-void-text">{title}</p>
+                <p className="text-xs text-void-muted">{desc}</p>
+              </div>
             </div>
-          </div>
+          ))}
         </div>
 
         <p className="relative text-xs text-void-subtle">© 2026 ApplyPilot. All rights reserved.</p>
       </div>
 
-      {/* Right panel — form */}
+      {/* Right form panel */}
       <div className="flex-1 flex items-center justify-center px-6 py-12">
         <div className="w-full max-w-sm">
           {/* Mobile logo */}
@@ -81,13 +82,26 @@ function LoginForm() {
             <span className="font-semibold text-void-text text-sm">ApplyPilot</span>
           </Link>
 
-          <h1 className="text-2xl font-bold text-void-text mb-1">Welcome back</h1>
+          <h1 className="text-2xl font-bold text-void-text mb-1">Create your account</h1>
           <p className="text-sm text-void-muted mb-8">
-            Don&apos;t have an account?{" "}
-            <Link href="/register" className="text-void-accent hover:underline">Sign up free</Link>
+            Already have an account?{" "}
+            <Link href="/login" className="text-void-accent hover:underline">Sign in</Link>
           </p>
 
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+            <div>
+              <label className="text-xs text-void-muted block mb-1.5">Full name</label>
+              <input
+                type="text"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="Jane Smith"
+                required
+                autoFocus
+                className="w-full px-3 py-2.5 rounded-lg bg-void-surface border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
+              />
+            </div>
+
             <div>
               <label className="text-xs text-void-muted block mb-1.5">Email</label>
               <input
@@ -96,20 +110,17 @@ function LoginForm() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 required
-                autoFocus
                 className="w-full px-3 py-2.5 rounded-lg bg-void-surface border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
               />
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs text-void-muted">Password</label>
-              </div>
+              <label className="text-xs text-void-muted block mb-1.5">Password</label>
               <input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Min. 8 characters"
                 required
                 className="w-full px-3 py-2.5 rounded-lg bg-void-surface border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
               />
@@ -123,24 +134,20 @@ function LoginForm() {
 
             <button
               type="submit"
-              disabled={submitting || !email || !password}
+              disabled={submitting || !fullName || !email || !password}
               className="w-full py-2.5 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2 mt-1"
             >
               {submitting
                 ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin-slow" />
-                : "Sign in →"}
+                : "Create account →"}
             </button>
+
+            <p className="text-center text-xs text-void-subtle">
+              By signing up you agree to store your data locally on your server.
+            </p>
           </form>
         </div>
       </div>
     </div>
-  );
-}
-
-export default function LoginPage() {
-  return (
-    <Suspense>
-      <LoginForm />
-    </Suspense>
   );
 }
