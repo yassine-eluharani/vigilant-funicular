@@ -1,0 +1,36 @@
+name: Deploy Discovery Service
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "discovery-service/**"
+      - "backend/src/applypilot/discovery/**"
+      - "backend/src/applypilot/database.py"
+      - "backend/pyproject.toml"
+
+jobs:
+  deploy:
+    name: Pull & restart on LXC
+    runs-on: self-hosted   # ← the runner installed on your Proxmox LXC
+
+    steps:
+      - name: Pull latest code
+        working-directory: /opt/applypilot
+        run: git pull --ff-only origin main
+
+      - name: Install/update Python deps
+        working-directory: /opt/applypilot/discovery-service
+        run: |
+          pip install -q -r requirements.txt
+          pip install -q -e /opt/applypilot/backend
+
+      - name: Restart service
+        run: sudo systemctl restart applypilot-discovery
+
+      - name: Verify service started
+        run: |
+          sleep 3
+          systemctl is-active applypilot-discovery \
+            && echo "✓ Service is running" \
+            || (journalctl -u applypilot-discovery -n 20 --no-pager && exit 1)

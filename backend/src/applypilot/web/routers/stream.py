@@ -1,10 +1,8 @@
-"""SSE streaming routes — task logs and apply worker state."""
+"""SSE streaming routes — task logs."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -42,29 +40,5 @@ async def stream_task_logs(task_id: str):
                 yield f"event: status\ndata: {status}\n\n"
                 break
             await asyncio.sleep(0.25)
-
-    return StreamingResponse(_generate(), media_type="text/event-stream", headers=_SSE_HEADERS)
-
-
-@router.get("/api/stream/apply")
-async def stream_apply_status():
-    """SSE: stream apply worker states every 500ms."""
-
-    async def _generate():
-        import dataclasses
-        from applypilot.apply import dashboard as _dash
-
-        while True:
-            with _dash._lock:
-                workers = [dataclasses.asdict(s) for s in _dash._worker_states.values()]
-                events_raw = list(_dash._events)
-            clean_events = [re.sub(r"\[.*?\]", "", e) for e in events_raw]
-            payload = json.dumps({
-                "workers": workers,
-                "events": clean_events,
-                "totals": _dash.get_totals(),
-            })
-            yield f"data: {payload}\n\n"
-            await asyncio.sleep(0.5)
 
     return StreamingResponse(_generate(), media_type="text/event-stream", headers=_SSE_HEADERS)

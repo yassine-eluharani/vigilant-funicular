@@ -7,9 +7,23 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from applypilot.web.routers import auth, jobs, pipeline, config, apply, stream
+from applypilot.config import load_env
+from applypilot.web.routers import auth, jobs, pipeline, config, stream
 
-app = FastAPI(title="ApplyPilot API", docs_url="/api/docs", redoc_url=None)
+# Load .env early so all routers see GEMINI_API_KEY / OPENAI_API_KEY / LLM_URL
+load_env()
+
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(_app):
+    from applypilot.database import init_db
+    from applypilot.scheduler import start_scheduler
+    init_db()
+    start_scheduler()
+    yield
+
+app = FastAPI(title="ApplyPilot API", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 
 _cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",")]
 app.add_middleware(
@@ -24,5 +38,4 @@ app.include_router(auth.router)   # public — no auth dependency
 app.include_router(jobs.router)
 app.include_router(pipeline.router)
 app.include_router(config.router)
-app.include_router(apply.router)
 app.include_router(stream.router)

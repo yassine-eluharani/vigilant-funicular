@@ -18,17 +18,26 @@ _local = threading.local()
 
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Get a thread-local cached SQLite connection with WAL mode enabled.
+    """Get a thread-local cached DB connection.
 
-    Each thread gets its own connection (required for SQLite thread safety).
-    Connections are cached and reused within the same thread.
+    Supports:
+      - Local SQLite (default, or DATABASE_URL is a file path)
+      - Turso / libSQL  (DATABASE_URL=libsql://... + DATABASE_TOKEN=...)
 
     Args:
         db_path: Override the default DB_PATH. Useful for testing.
+                 Ignored when DATABASE_URL points to a remote DB.
 
     Returns:
-        sqlite3.Connection configured with WAL mode and row factory.
+        Connection configured with WAL mode and row factory.
     """
+    import os
+    database_url = os.environ.get("DATABASE_URL", "")
+
+    if database_url.startswith("libsql://") or database_url.startswith("wss://"):
+        return _turso_connection(database_url, os.environ.get("DATABASE_TOKEN", ""))
+
+    # Local SQLite
     path = str(db_path or DB_PATH)
 
     if not hasattr(_local, 'connections'):
@@ -48,6 +57,20 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     _local.connections[path] = conn
     return conn
+
+
+def _turso_connection(url: str, token: str) -> sqlite3.Connection:
+    """Return a libsql connection with sqlite3-compatible interface."""
+    if not hasattr(_local, "turso_conn"):
+        try:
+            import libsql_experimental as libsql
+        except ImportError:
+            raise RuntimeError(
+                "Install libsql-experimental for Turso support:\n"
+                "  pip install libsql-experimental"
+            )
+        _local.turso_conn = libsql.connect(database=url, auth_token=token)
+    return _local.turso_conn
 
 
 def close_connection(db_path: Path | str | None = None) -> None:
@@ -94,7 +117,24 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             password_hash TEXT NOT NULL,
             full_name     TEXT NOT NULL,
             created_at    TEXT NOT NULL,
-            last_login    TEXT
+            last_login    TEXT,
+            tier          TEXT DEFAULT 'free',
+            tailors_used  INTEGER DEFAULT 0,
+            covers_used   INTEGER DEFAULT 0,
+            usage_reset_at TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS discovery_runs (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            query        TEXT NOT NULL,
+            location     TEXT NOT NULL,
+            boards_json  TEXT NOT NULL,
+            started_at   TEXT,
+            completed_at TEXT,
+            status       TEXT DEFAULT 'pending',
+            jobs_found   INTEGER DEFAULT 0
         )
     """)
 
@@ -151,6 +191,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     # Run migrations for any columns added after initial schema
     ensure_columns(conn)
+    ensure_user_columns(conn)
 
     return conn
 
@@ -235,6 +276,26 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
         conn.commit()
 
     return added
+
+
+_USER_EXTRA_COLUMNS: dict[str, str] = {
+    "tier": "TEXT DEFAULT 'free'",
+    "tailors_used": "INTEGER DEFAULT 0",
+    "covers_used": "INTEGER DEFAULT 0",
+    "usage_reset_at": "TEXT",
+    "searches_json": "TEXT",  # per-user search config (JSON), used by background scheduler
+}
+
+
+def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
+    """Add any missing tier/usage columns to the users table."""
+    if conn is None:
+        conn = get_connection()
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+    for col, dtype in _USER_EXTRA_COLUMNS.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
+    conn.commit()
 
 
 def get_stats(conn: sqlite3.Connection | None = None) -> dict:

@@ -1,27 +1,11 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { getProfile, updateProfile, getSearches, updateSearches, getEmployers, updateEmployers, getEnvConfig, updateEnvConfig, getResumeText, updateResumeText, uploadResumePdf, getSystemStatus } from "@/lib/api";
+import { useState, useEffect } from "react";
+import { getProfile, updateProfile, getSearches, updateSearches, getEmployers, updateEmployers, getResumeText, updateResumeText, uploadResumePdf } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
-import type { Profile, SystemStatus } from "@/lib/types";
+import type { Profile } from "@/lib/types";
 
-type Tab = "profile" | "searches" | "employers" | "keys" | "resume";
-
-// ── Tier badge ────────────────────────────────────────────────────────────────
-
-function TierBadge({ tier }: { tier: 1 | 2 | 3 }) {
-  const styles = [
-    "",
-    "bg-void-muted/10 text-void-muted border-void-muted/30",
-    "bg-void-accent/10 text-void-accent border-void-accent/30",
-    "bg-void-success/10 text-void-success border-void-success/30",
-  ];
-  return (
-    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${styles[tier]}`}>
-      Tier {tier}
-    </span>
-  );
-}
+type Tab = "profile" | "searches" | "employers" | "resume";
 
 // ── Profile tab ───────────────────────────────────────────────────────────────
 
@@ -97,30 +81,101 @@ function ProfileTab() {
 
 // ── Searches tab ──────────────────────────────────────────────────────────────
 
+const ALL_BOARDS = ["indeed", "linkedin", "glassdoor", "zip_recruiter", "google"];
+
+interface SearchQuery { query: string; tier: 1 | 2 | 3 }
+interface SearchLocation { location: string; remote: boolean }
+
+function TagInput({ tags, onAdd, onRemove, placeholder }: {
+  tags: string[];
+  onAdd: (v: string) => void;
+  onRemove: (v: string) => void;
+  placeholder?: string;
+}) {
+  const [val, setVal] = useState("");
+  const add = () => { const t = val.trim(); if (t && !tags.includes(t)) { onAdd(t); setVal(""); } };
+  return (
+    <div className="flex flex-col gap-2">
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {tags.map(t => (
+            <span key={t} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-void-raised border border-void-border text-xs text-void-text">
+              {t}
+              <button onClick={() => onRemove(t)} className="text-void-muted hover:text-void-danger leading-none ml-0.5">×</button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          className="flex-1 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
+          value={val}
+          onChange={e => setVal(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); add(); } }}
+          placeholder={placeholder}
+        />
+        <button onClick={add} disabled={!val.trim()} className="px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-muted hover:text-void-text disabled:opacity-30 transition-colors">Add</button>
+      </div>
+    </div>
+  );
+}
+
 function SearchesTab() {
   const toast = useToast();
-  const [data, setData] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [raw, setRaw] = useState("");
-  const [rawError, setRawError] = useState("");
+
+  // Parsed state
+  const [queries, setQueries] = useState<SearchQuery[]>([]);
+  const [locations, setLocations] = useState<SearchLocation[]>([]);
+  const [boards, setBoards] = useState<string[]>([]);
+  const [country, setCountry] = useState("USA");
+  const [hoursOld, setHoursOld] = useState(72);
+  const [resultsPerSite, setResultsPerSite] = useState(100);
+  const [excludeTitles, setExcludeTitles] = useState<string[]>([]);
+  const [acceptPatterns, setAcceptPatterns] = useState<string[]>([]);
+  const [rejectPatterns, setRejectPatterns] = useState<string[]>([]);
+  // Preserve unknown keys so we don't lose them on save
+  const [extra, setExtra] = useState<Record<string, unknown>>({});
 
   useEffect(() => {
     getSearches()
-      .then(d => { setData(d); setRaw(JSON.stringify(d, null, 2)); })
-      .catch(() => setData({}))
+      .then(d => {
+        const raw = d as Record<string, unknown>;
+        setQueries((raw.queries as SearchQuery[] | undefined) ?? []);
+        setLocations((raw.locations as SearchLocation[] | undefined) ?? []);
+        setBoards((raw.boards as string[] | undefined) ?? []);
+        setCountry((raw.country as string | undefined) ?? "USA");
+        const defaults = (raw.defaults as Record<string, number> | undefined) ?? {};
+        setHoursOld(defaults.hours_old ?? 72);
+        setResultsPerSite(defaults.results_per_site ?? 100);
+        setExcludeTitles((raw.exclude_titles as string[] | undefined) ?? []);
+        const loc = (raw.location as Record<string, string[]> | undefined) ?? {};
+        setAcceptPatterns(loc.accept_patterns ?? []);
+        setRejectPatterns(loc.reject_patterns ?? []);
+        // Preserve unrecognised keys
+        const { queries: _q, locations: _l, boards: _b, country: _c, defaults: _d,
+                exclude_titles: _e, location: _loc, ...rest } = raw;
+        setExtra(rest);
+      })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   const save = async () => {
-    let parsed: unknown;
-    try { parsed = JSON.parse(raw); setRawError(""); } catch {
-      setRawError("Invalid JSON"); return;
-    }
     setSaving(true);
     try {
-      await updateSearches(parsed as Record<string, unknown>);
-      toast("Searches config saved");
+      await updateSearches({
+        ...extra,
+        queries,
+        locations,
+        boards,
+        country,
+        defaults: { results_per_site: resultsPerSite, hours_old: hoursOld },
+        exclude_titles: excludeTitles,
+        location: { accept_patterns: acceptPatterns, reject_patterns: rejectPatterns },
+      });
+      toast("Search config saved");
     } catch {
       toast("Failed to save", false);
     } finally {
@@ -128,21 +183,183 @@ function SearchesTab() {
     }
   };
 
-  if (loading) return <div className="p-6"><div className="skeleton h-96" /></div>;
+  const toggleBoard = (b: string) =>
+    setBoards(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b]);
+
+  const addQuery = (query: string, tier: 1 | 2 | 3 = 2) => {
+    if (!queries.some(q => q.query.toLowerCase() === query.toLowerCase()))
+      setQueries(prev => [...prev, { query, tier }]);
+  };
+
+  const removeQuery = (query: string) =>
+    setQueries(prev => prev.filter(q => q.query !== query));
+
+  const cycleQueryTier = (query: string) =>
+    setQueries(prev => prev.map(q =>
+      q.query === query ? { ...q, tier: q.tier === 3 ? 1 : (q.tier + 1) as 1 | 2 | 3 } : q
+    ));
+
+  const addLocation = () =>
+    setLocations(prev => [...prev, { location: "", remote: false }]);
+
+  const updateLocation = (i: number, patch: Partial<SearchLocation>) =>
+    setLocations(prev => prev.map((l, idx) => idx === i ? { ...l, ...patch } : l));
+
+  const removeLocation = (i: number) =>
+    setLocations(prev => prev.filter((_, idx) => idx !== i));
+
+  const tierColors: Record<number, string> = {
+    1: "bg-void-success/15 text-void-success border-void-success/30",
+    2: "bg-void-accent/15 text-void-accent border-void-accent/30",
+    3: "bg-void-muted/15 text-void-muted border-void-muted/30",
+  };
+
+  if (loading) return <div className="p-6 space-y-4">{Array.from({length: 5}).map((_,i) => <div key={i} className="skeleton h-16" />)}</div>;
 
   return (
-    <div className="p-6">
-      <p className="text-xs text-void-muted mb-3">Edit searches.yaml configuration as JSON. Changes take effect on next pipeline run.</p>
-      <textarea
-        value={raw}
-        onChange={e => setRaw(e.target.value)}
-        className="w-full h-[60vh] font-mono text-xs bg-void-raised border border-void-border rounded-lg p-3 text-void-text focus:outline-none focus:border-void-accent/60 resize-none leading-relaxed"
-      />
-      {rawError && <p className="text-xs text-void-danger mt-1">{rawError}</p>}
+    <div className="p-6 max-w-2xl space-y-8">
+
+      {/* Queries */}
+      <section>
+        <SectionHeader title="Search Queries" hint="What to search for on job boards. Click the tier badge to cycle priority (1 = most targeted, 3 = broad net)." />
+        <div className="flex flex-wrap gap-1.5 mb-3">
+          {queries.map(({ query, tier }) => (
+            <span key={query} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-void-raised border border-void-border text-xs text-void-text">
+              {query}
+              <button
+                title="Click to cycle tier"
+                onClick={() => cycleQueryTier(query)}
+                className={`px-1.5 py-0.5 rounded-full border text-xs font-semibold transition-colors ${tierColors[tier]}`}
+              >
+                {tier}
+              </button>
+              <button onClick={() => removeQuery(query)} className="text-void-muted hover:text-void-danger px-0.5 leading-none">×</button>
+            </span>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
+            id="new-query"
+            className="flex-1 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
+            placeholder="Add a search query…"
+            onKeyDown={e => {
+              if (e.key === "Enter") {
+                const v = (e.target as HTMLInputElement).value.trim();
+                if (v) { addQuery(v); (e.target as HTMLInputElement).value = ""; }
+              }
+            }}
+          />
+          <button
+            onClick={() => {
+              const el = document.getElementById("new-query") as HTMLInputElement;
+              if (el.value.trim()) { addQuery(el.value.trim()); el.value = ""; }
+            }}
+            className="px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+          >Add</button>
+        </div>
+      </section>
+
+      {/* Locations */}
+      <section>
+        <SectionHeader title="Locations" hint="Where to search. Toggle Remote for location-agnostic searches." />
+        <div className="flex flex-col gap-2 mb-2">
+          {locations.map((loc, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                className="flex-1 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
+                value={loc.location}
+                onChange={e => updateLocation(i, { location: e.target.value })}
+                placeholder="San Francisco CA"
+              />
+              <label className="flex items-center gap-1.5 text-xs text-void-muted cursor-pointer shrink-0">
+                <input type="checkbox" checked={loc.remote} onChange={e => updateLocation(i, { remote: e.target.checked })} className="accent-void-accent" />
+                Remote
+              </label>
+              <button onClick={() => removeLocation(i)} className="text-void-muted hover:text-void-danger text-lg leading-none px-1">×</button>
+            </div>
+          ))}
+        </div>
+        <button onClick={addLocation} className="text-xs text-void-accent hover:underline">+ Add location</button>
+      </section>
+
+      {/* Job Boards */}
+      <section>
+        <SectionHeader title="Job Boards" hint="Which boards to search on." />
+        <div className="flex flex-wrap gap-2">
+          {ALL_BOARDS.map(b => (
+            <button
+              key={b}
+              onClick={() => toggleBoard(b)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                boards.includes(b)
+                  ? "bg-void-accent/15 border border-void-accent/40 text-void-accent"
+                  : "bg-void-raised border border-void-border text-void-muted hover:text-void-text"
+              }`}
+            >
+              {b.replace("_", " ")}
+            </button>
+          ))}
+        </div>
+      </section>
+
+      {/* Defaults */}
+      <section>
+        <SectionHeader title="Defaults" hint="Search volume and recency controls." />
+        <div className="flex gap-4">
+          <div>
+            <label className="block text-xs text-void-muted mb-1">Max results per board</label>
+            <input type="number" min={10} max={500} value={resultsPerSite}
+              onChange={e => setResultsPerSite(Number(e.target.value))}
+              className="w-32 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text focus:outline-none focus:border-void-accent/60 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-xs text-void-muted mb-1">Max job age (hours)</label>
+            <input type="number" min={1} max={720} value={hoursOld}
+              onChange={e => setHoursOld(Number(e.target.value))}
+              className="w-32 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text focus:outline-none focus:border-void-accent/60 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-xs text-void-muted mb-1">Country</label>
+            <input value={country} onChange={e => setCountry(e.target.value)}
+              className="w-28 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text focus:outline-none focus:border-void-accent/60 transition-colors" />
+          </div>
+        </div>
+      </section>
+
+      {/* Exclude titles */}
+      <section>
+        <SectionHeader title="Exclude Job Titles" hint="Jobs whose title contains any of these keywords will be skipped." />
+        <TagInput tags={excludeTitles} onAdd={v => setExcludeTitles(p => [...p, v])} onRemove={v => setExcludeTitles(p => p.filter(x => x !== v))} placeholder="e.g. intern, VP, clearance required" />
+      </section>
+
+      {/* Location filters */}
+      <section>
+        <SectionHeader title="Location Filters" hint="Accept/reject jobs based on their listed location text." />
+        <div className="grid grid-cols-2 gap-6">
+          <div>
+            <p className="text-xs text-void-success mb-2 font-medium">Accept patterns</p>
+            <TagInput tags={acceptPatterns} onAdd={v => setAcceptPatterns(p => [...p, v])} onRemove={v => setAcceptPatterns(p => p.filter(x => x !== v))} placeholder="e.g. Remote, California" />
+          </div>
+          <div>
+            <p className="text-xs text-void-danger mb-2 font-medium">Reject patterns</p>
+            <TagInput tags={rejectPatterns} onAdd={v => setRejectPatterns(p => [...p, v])} onRemove={v => setRejectPatterns(p => p.filter(x => x !== v))} placeholder="e.g. onsite only, London" />
+          </div>
+        </div>
+      </section>
+
       <button onClick={save} disabled={saving}
-        className="mt-3 px-6 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors">
-        {saving ? "Saving…" : "Save Searches"}
+        className="px-6 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors">
+        {saving ? "Saving…" : "Save Search Config"}
       </button>
+    </div>
+  );
+}
+
+function SectionHeader({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <div className="mb-3">
+      <h3 className="text-xs font-medium text-void-muted uppercase tracking-wider">{title}</h3>
+      {hint && <p className="text-xs text-void-subtle mt-0.5">{hint}</p>}
     </div>
   );
 }
@@ -191,6 +408,10 @@ function EmployersTab() {
 
   return (
     <div className="p-6">
+      <div className="mb-4 p-3 rounded-lg bg-void-raised border border-void-border text-xs text-void-muted leading-relaxed">
+        <span className="text-void-text font-medium">Workday direct scraping</span>
+        {" — "}Enable companies below to have their jobs scraped directly from their Workday career portals, bypassing generic job boards. Disabled by default; enable only the ones you're interested in.
+      </div>
       <div className="flex items-center gap-3 mb-4">
         <input
           type="text"
@@ -235,106 +456,6 @@ function EmployersTab() {
       <button onClick={save} disabled={saving}
         className="mt-4 px-6 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors">
         {saving ? "Saving…" : "Save Employers"}
-      </button>
-    </div>
-  );
-}
-
-// ── API Keys tab ──────────────────────────────────────────────────────────────
-
-function ApiKeysTab() {
-  const toast = useToast();
-  const [keys, setKeys] = useState<Record<string, string>>({});
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<SystemStatus | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    Promise.all([getEnvConfig(), getSystemStatus()])
-      .then(([k, s]) => {
-        setKeys(k as Record<string, string>);
-        setEdits({});
-        setStatus(s);
-      })
-      .finally(() => setLoading(false));
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await updateEnvConfig(edits);
-      toast("API keys saved");
-      const fresh = await getEnvConfig();
-      setKeys(fresh as Record<string, string>);
-      setEdits({});
-    } catch {
-      toast("Failed to save", false);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loading) return <div className="p-6 space-y-3">{Array.from({length:5}).map((_,i)=><div key={i} className="skeleton h-12" />)}</div>;
-
-  const KEY_LABELS: Record<string, string> = {
-    GEMINI_API_KEY: "Gemini API Key",
-    OPENAI_API_KEY: "OpenAI API Key",
-    LLM_URL: "Local LLM URL",
-    LLM_MODEL: "LLM Model Override",
-    CAPSOLVER_API_KEY: "CapSolver API Key",
-  };
-
-  return (
-    <div className="p-6 max-w-xl">
-      {status && (
-        <div className="mb-6 p-4 rounded-lg bg-void-surface border border-void-border">
-          <h3 className="text-xs font-medium text-void-muted uppercase tracking-wider mb-3">System Status</h3>
-          <div className="flex flex-wrap gap-3">
-            <TierBadge tier={status.tier} />
-            <span className="text-xs text-void-muted border border-void-border rounded px-2 py-0.5">{status.tier_label}</span>
-            {status.llm_provider && <span className="text-xs text-void-accent border border-void-accent/30 rounded px-2 py-0.5">{status.llm_provider}</span>}
-            {status.llm_model && <span className="text-xs text-void-muted font-mono">{status.llm_model}</span>}
-          </div>
-          <div className="flex gap-4 mt-3">
-            <span className={`text-xs ${status.has_chrome ? "text-void-success" : "text-void-muted"}`}>
-              {status.has_chrome ? "✓" : "✗"} Chrome
-            </span>
-            <span className={`text-xs ${status.has_claude_cli ? "text-void-success" : "text-void-muted"}`}>
-              {status.has_claude_cli ? "✓" : "✗"} Claude CLI
-            </span>
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-4">
-        {Object.keys(KEY_LABELS).map((key) => {
-          const current = keys[key];
-          const editVal = edits[key] ?? "";
-          const isSet = current === "***" || (current && current !== "***");
-          return (
-            <div key={key}>
-              <label className="block text-xs text-void-muted mb-1.5">{KEY_LABELS[key]}</label>
-              <div className="relative">
-                <input
-                  type={key.endsWith("API_KEY") ? "password" : "text"}
-                  value={editVal}
-                  onChange={e => setEdits(d => ({ ...d, [key]: e.target.value }))}
-                  placeholder={isSet ? "••••••••••• (set — enter new value to change)" : "Not configured"}
-                  className="w-full px-3 py-2 rounded-lg bg-void-raised border border-void-border text-sm text-void-text placeholder:text-void-muted/60 focus:outline-none focus:border-void-accent/60 transition-colors pr-16"
-                />
-                {isSet && !editVal && (
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-void-success">set</span>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <button onClick={save} disabled={saving || Object.keys(edits).every(k => !edits[k])}
-        className="mt-6 px-6 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors">
-        {saving ? "Saving…" : "Save Keys"}
       </button>
     </div>
   );
@@ -448,7 +569,6 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "profile",   label: "Profile" },
   { id: "searches",  label: "Searches" },
   { id: "employers", label: "Employers" },
-  { id: "keys",      label: "API Keys" },
   { id: "resume",    label: "Resume" },
 ];
 
@@ -484,7 +604,6 @@ export default function ProfilePage() {
         {tab === "profile"   && <ProfileTab />}
         {tab === "searches"  && <SearchesTab />}
         {tab === "employers" && <EmployersTab />}
-        {tab === "keys"      && <ApiKeysTab />}
         {tab === "resume"    && <ResumeTab />}
       </div>
     </div>

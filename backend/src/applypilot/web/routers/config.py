@@ -53,13 +53,25 @@ def get_searches() -> JSONResponse:
 
 
 @router.put("/api/config/searches")
-async def update_searches(request: Request) -> JSONResponse:
+async def update_searches(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
+    import json as _json
     data = await request.json()
     SEARCH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     SEARCH_CONFIG_PATH.write_text(
         yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False),
         encoding="utf-8",
     )
+    # Persist per-user copy so the background scheduler can discover for this user
+    try:
+        from applypilot.database import get_connection
+        conn = get_connection()
+        conn.execute(
+            "UPDATE users SET searches_json = ? WHERE id = ?",
+            (_json.dumps(data), int(user["sub"])),
+        )
+        conn.commit()
+    except Exception:
+        pass  # Non-fatal — shared yaml is the source of truth
     return JSONResponse({"ok": True})
 
 
@@ -182,16 +194,14 @@ async def upload_resume_pdf(request: Request) -> JSONResponse:
 
 def _extract_resume_text(pdf_path: Path) -> dict:
     from applypilot.config import RESUME_PATH
-    import subprocess
+    from pypdf import PdfReader
     try:
-        result = subprocess.run(
-            ["pdftotext", "-layout", str(pdf_path), "-"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            RESUME_PATH.write_text(result.stdout, encoding="utf-8")
-            return {"extracted": True, "chars": len(result.stdout)}
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+        reader = PdfReader(str(pdf_path))
+        text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+        if text:
+            RESUME_PATH.write_text(text, encoding="utf-8")
+            return {"extracted": True, "chars": len(text)}
+    except Exception:
         pass
     return {"extracted": False}
 
@@ -258,12 +268,11 @@ async def parse_resume(request: Request) -> JSONResponse:
 
 @router.get("/api/system/status")
 def system_status() -> JSONResponse:
-    import shutil
     from applypilot.config import get_tier
     from applypilot.llm import _detect_provider
 
     tier = get_tier()
-    tier_labels = {1: "Discovery Only", 2: "AI Scoring & Tailoring", 3: "Full Auto-Apply"}
+    tier_labels = {1: "Discovery Only", 2: "AI Scoring & Tailoring"}
     provider, model, _key = _detect_provider()
 
     return JSONResponse({
@@ -271,10 +280,23 @@ def system_status() -> JSONResponse:
         "tier_label": tier_labels.get(tier, "Unknown"),
         "llm_provider": provider,
         "llm_model": model,
-        "has_chrome": bool(
-            shutil.which("google-chrome") or
-            shutil.which("chromium") or
-            shutil.which("chromium-browser")
-        ),
-        "has_claude_cli": bool(shutil.which("claude")),
     })
+
+
+# ---------------------------------------------------------------------------
+# Scheduler status
+# ---------------------------------------------------------------------------
+
+@router.get("/api/scheduler/status")
+def scheduler_status() -> JSONResponse:
+    from applypilot.scheduler import last_sync_info
+    return JSONResponse(last_sync_info())
+
+
+@router.post("/api/scheduler/trigger")
+def scheduler_trigger() -> JSONResponse:
+    """Manually kick off a background discovery cycle (runs async)."""
+    from applypilot.web.core import _start_task
+    from applypilot.scheduler import run_cycle
+    task_id = _start_task(run_cycle)
+    return JSONResponse({"ok": True, "task_id": task_id})

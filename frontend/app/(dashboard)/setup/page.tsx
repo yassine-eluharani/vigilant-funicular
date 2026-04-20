@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { updateProfile, updateEnvConfig, updateSearches, uploadResumePdf, parseResumeCv, getTask } from "@/lib/api";
+import { updateProfile, updateSearches, uploadResumePdf, parseResumeCv, getTask } from "@/lib/api";
 import type { Profile } from "@/lib/types";
 
 // ── Progress bar ──────────────────────────────────────────────────────────────
@@ -12,7 +12,6 @@ const STEPS = [
   { id: 2, label: "Personal" },
   { id: 3, label: "Preferences" },
   { id: 4, label: "Search" },
-  { id: 5, label: "API Keys" },
 ];
 
 function StepIndicator({ current }: { current: number }) {
@@ -391,6 +390,122 @@ function Step3({
 
 const ALL_BOARDS = ["indeed", "linkedin", "glassdoor", "zip_recruiter", "google"];
 
+const SUGGESTED_QUERIES = [
+  "Software Engineer",
+  "Frontend Engineer",
+  "Backend Engineer",
+  "Full Stack Engineer",
+  "Data Engineer",
+  "Data Scientist",
+  "Machine Learning Engineer",
+  "DevOps Engineer",
+  "Platform Engineer",
+  "Site Reliability Engineer",
+  "Product Manager",
+  "Engineering Manager",
+  "Mobile Engineer",
+  "iOS Engineer",
+  "Android Engineer",
+  "Python Developer",
+  "TypeScript Developer",
+  "Go Engineer",
+  "Security Engineer",
+  "QA Engineer",
+];
+
+function QueryPicker({
+  queries,
+  setQueries,
+}: {
+  queries: string[];
+  setQueries: (v: string[]) => void;
+}) {
+  const [customInput, setCustomInput] = useState("");
+
+  const toggle = (q: string) => {
+    const normalized = q.toLowerCase();
+    const exists = queries.some((x) => x.toLowerCase() === normalized);
+    setQueries(exists ? queries.filter((x) => x.toLowerCase() !== normalized) : [...queries, q]);
+  };
+
+  const addCustom = () => {
+    const trimmed = customInput.trim();
+    if (!trimmed) return;
+    if (!queries.some((x) => x.toLowerCase() === trimmed.toLowerCase())) {
+      setQueries([...queries, trimmed]);
+    }
+    setCustomInput("");
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") { e.preventDefault(); addCustom(); }
+  };
+
+  const isSelected = (q: string) => queries.some((x) => x.toLowerCase() === q.toLowerCase());
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Selected tags */}
+      {queries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {queries.map((q) => (
+            <span
+              key={q}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-void-accent/15 border border-void-accent/40 text-void-accent text-xs font-medium"
+            >
+              {q}
+              <button
+                type="button"
+                onClick={() => toggle(q)}
+                className="text-void-accent/60 hover:text-void-accent leading-none"
+                aria-label={`Remove ${q}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Suggestions */}
+      <div>
+        <p className="text-xs text-void-subtle mb-1.5">Suggestions — click to add</p>
+        <div className="flex flex-wrap gap-1.5">
+          {SUGGESTED_QUERIES.filter((q) => !isSelected(q)).map((q) => (
+            <button
+              key={q}
+              type="button"
+              onClick={() => toggle(q)}
+              className="px-2.5 py-1 rounded-lg text-xs bg-void-raised border border-void-border text-void-muted hover:text-void-text hover:border-void-accent/30 transition-colors"
+            >
+              + {q}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Custom input */}
+      <div className="flex gap-2">
+        <input
+          className={inputCls + " flex-1"}
+          value={customInput}
+          onChange={(e) => setCustomInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder="Add a custom query…"
+        />
+        <button
+          type="button"
+          onClick={addCustom}
+          disabled={!customInput.trim()}
+          className="px-3 py-2 rounded-lg bg-void-raised border border-void-border text-sm text-void-muted hover:text-void-text disabled:opacity-30 transition-colors"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function Step4({
   queries,
   setQueries,
@@ -401,8 +516,8 @@ function Step4({
   hoursOld,
   setHoursOld,
 }: {
-  queries: string;
-  setQueries: (v: string) => void;
+  queries: string[];
+  setQueries: (v: string[]) => void;
   locations: string;
   setLocations: (v: string) => void;
   boards: string[];
@@ -419,13 +534,8 @@ function Step4({
       <p className="text-sm text-void-muted mb-6">Configure where and what to search for.</p>
       <div className="flex flex-col gap-5">
         <div>
-          <label className={labelCls}>Job search queries (comma-separated)</label>
-          <input
-            className={inputCls}
-            value={queries}
-            onChange={(e) => setQueries(e.target.value)}
-            placeholder="software engineer, backend developer, python engineer"
-          />
+          <label className={labelCls}>Job search queries</label>
+          <QueryPicker queries={queries} setQueries={setQueries} />
         </div>
         <div>
           <label className={labelCls}>Locations (comma-separated)</label>
@@ -471,64 +581,6 @@ function Step4({
   );
 }
 
-// ── Step 5: API Keys ──────────────────────────────────────────────────────────
-
-function Step5({
-  geminiKey,
-  setGeminiKey,
-  openaiKey,
-  setOpenaiKey,
-}: {
-  geminiKey: string;
-  setGeminiKey: (v: string) => void;
-  openaiKey: string;
-  setOpenaiKey: (v: string) => void;
-}) {
-  return (
-    <div>
-      <h2 className="text-base font-semibold text-void-text mb-1">API Keys</h2>
-      <p className="text-sm text-void-muted mb-6">
-        Required for AI scoring and resume tailoring (Tier 2+). You only need one.
-      </p>
-      <div className="flex flex-col gap-4">
-        <div>
-          <label className={labelCls}>Gemini API Key (recommended — free tier available)</label>
-          <input
-            className={inputCls}
-            type="password"
-            value={geminiKey}
-            onChange={(e) => setGeminiKey(e.target.value)}
-            placeholder="AIza..."
-            autoComplete="off"
-          />
-          <p className="text-xs text-void-subtle mt-1">Get yours at aistudio.google.com</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="flex-1 h-px bg-void-border" />
-          <span className="text-xs text-void-subtle">or</span>
-          <div className="flex-1 h-px bg-void-border" />
-        </div>
-        <div>
-          <label className={labelCls}>OpenAI API Key</label>
-          <input
-            className={inputCls}
-            type="password"
-            value={openaiKey}
-            onChange={(e) => setOpenaiKey(e.target.value)}
-            placeholder="sk-..."
-            autoComplete="off"
-          />
-        </div>
-      </div>
-      <div className="mt-6 p-4 bg-void-raised rounded-xl border border-void-border text-xs text-void-muted space-y-1">
-        <p className="text-void-text font-medium mb-2">Tier system</p>
-        <p>⚡ <strong className="text-void-text">Tier 1</strong> — Job discovery (no API key needed)</p>
-        <p>🤖 <strong className="text-void-text">Tier 2</strong> — AI scoring + resume tailoring (LLM key required)</p>
-        <p>🚀 <strong className="text-void-text">Tier 3</strong> — Auto-apply (Claude CLI + Chrome required)</p>
-      </div>
-    </div>
-  );
-}
 
 // ── Main wizard ───────────────────────────────────────────────────────────────
 
@@ -545,14 +597,11 @@ export default function SetupPage() {
   const [resumeFacts, setResumeFacts] = useState<NonNullable<Profile["resume_facts"]>>({});
 
   // Search config state
-  const [queries, setQueries] = useState("software engineer, backend engineer");
+  const [queries, setQueries] = useState<string[]>(["Software Engineer", "Backend Engineer"]);
   const [locations, setLocations] = useState("Remote");
   const [boards, setBoards] = useState(["indeed", "linkedin"]);
   const [hoursOld, setHoursOld] = useState(72);
 
-  // API keys state
-  const [geminiKey, setGeminiKey] = useState("");
-  const [openaiKey, setOpenaiKey] = useState("");
 
   const handleExtracted = useCallback((extracted: Partial<Profile>) => {
     if (extracted.personal) setPersonal((p) => ({ ...extracted.personal, ...p }));
@@ -580,20 +629,13 @@ export default function SetupPage() {
       await updateProfile(profile);
 
       // Save searches config
-      const queryList = queries.split(",").map((q) => q.trim()).filter(Boolean);
       const locationList = locations.split(",").map((l) => l.trim()).filter(Boolean);
       await updateSearches({
-        queries: queryList.map((q, i) => ({ query: q, tier: i < 3 ? 1 : 2 })),
+        queries: queries.map((q, i) => ({ query: q, tier: i < 3 ? 1 : 2 })),
         locations: locationList.map((l) => ({ location: l, remote: l.toLowerCase().includes("remote") })),
         boards,
         defaults: { results_per_site: 100, hours_old: hoursOld },
       });
-
-      // Save API keys (only if provided)
-      const envUpdates: Record<string, string> = {};
-      if (geminiKey) envUpdates["GEMINI_API_KEY"] = geminiKey;
-      if (openaiKey) envUpdates["OPENAI_API_KEY"] = openaiKey;
-      if (Object.keys(envUpdates).length > 0) await updateEnvConfig(envUpdates);
 
       router.replace("/jobs");
     } catch (e) {
@@ -633,12 +675,6 @@ export default function SetupPage() {
               locations={locations} setLocations={setLocations}
               boards={boards} setBoards={setBoards}
               hoursOld={hoursOld} setHoursOld={setHoursOld}
-            />
-          )}
-          {step === 5 && (
-            <Step5
-              geminiKey={geminiKey} setGeminiKey={setGeminiKey}
-              openaiKey={openaiKey} setOpenaiKey={setOpenaiKey}
             />
           )}
         </div>

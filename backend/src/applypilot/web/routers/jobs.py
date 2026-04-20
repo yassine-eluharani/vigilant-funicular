@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from applypilot.database import get_connection
-from applypilot.web.auth import get_current_user
+from applypilot.web.auth import (
+    get_current_user,
+    get_user_record,
+    check_and_increment_usage,
+    BLUR_SCORE_THRESHOLD,
+)
 from applypilot.web.core import _start_task, decode_url, row_to_job
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -75,6 +80,7 @@ def stats() -> JSONResponse:
 
 @router.get("/api/jobs")
 def list_jobs(
+    user: dict = Depends(get_current_user),
     min_score: int = Query(7, ge=1, le=10),
     max_score: int = Query(10, ge=1, le=10),
     site: Optional[str] = Query(None),
@@ -139,7 +145,25 @@ def list_jobs(
         params + [limit, offset],
     ).fetchall()
 
-    return JSONResponse({"jobs": [row_to_job(r) for r in rows], "total": total, "offset": offset, "limit": limit})
+    # Apply free-tier blur: lock jobs scoring >= threshold
+    user_record = get_user_record(int(user["sub"]))
+    is_free = user_record["tier"] == "free"
+
+    jobs_out = []
+    for r in rows:
+        job = row_to_job(r)
+        if is_free and (job.get("fit_score") or 0) >= BLUR_SCORE_THRESHOLD:
+            job["locked"] = True
+            job["company"] = None
+            job["score_reasoning"] = None
+            job["application_url"] = None
+            job["has_pdf"] = False
+            job["has_cover_pdf"] = False
+        else:
+            job["locked"] = False
+        jobs_out.append(job)
+
+    return JSONResponse({"jobs": jobs_out, "total": total, "offset": offset, "limit": limit})
 
 
 # ---------------------------------------------------------------------------
@@ -228,7 +252,12 @@ async def save_resume(encoded_url: str, request: Request) -> JSONResponse:
 
 
 @router.post("/api/jobs/{encoded_url}/tailor")
-def tailor_job(encoded_url: str, validation_mode: str = Query("normal")) -> JSONResponse:
+def tailor_job(
+    encoded_url: str,
+    user: dict = Depends(get_current_user),
+    validation_mode: str = Query("normal"),
+) -> JSONResponse:
+    check_and_increment_usage(int(user["sub"]), "tailor")
     job_url = decode_url(encoded_url)
     from applypilot.scoring.tailor import tailor_job_by_url
     task_id = _start_task(tailor_job_by_url, job_url, validation_mode)
@@ -239,40 +268,49 @@ def tailor_job(encoded_url: str, validation_mode: str = Query("normal")) -> JSON
 # Status mutations
 # ---------------------------------------------------------------------------
 
+def _mark_job(job_url: str, status: str) -> None:
+    """Update apply_status for a job in the database."""
+    import datetime
+    with get_connection() as conn:
+        if status == "restore":
+            conn.execute(
+                "UPDATE jobs SET apply_status = NULL, applied_at = NULL WHERE url = ?",
+                (job_url,),
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?",
+                (status, datetime.datetime.utcnow().isoformat(), job_url),
+            )
+        conn.commit()
+
+
 @router.post("/api/jobs/{encoded_url}/mark-applied")
 def mark_applied(encoded_url: str) -> JSONResponse:
-    job_url = decode_url(encoded_url)
-    from applypilot.apply.launcher import mark_job
-    mark_job(job_url, "applied")
+    _mark_job(decode_url(encoded_url), "applied")
     return JSONResponse({"ok": True, "status": "applied"})
 
 
 @router.post("/api/jobs/{encoded_url}/dismiss")
 def dismiss_job(encoded_url: str) -> JSONResponse:
-    job_url = decode_url(encoded_url)
-    from applypilot.apply.launcher import mark_job
-    mark_job(job_url, "dismissed")
+    _mark_job(decode_url(encoded_url), "dismissed")
     return JSONResponse({"ok": True, "status": "dismissed"})
 
 
 @router.post("/api/jobs/{encoded_url}/restore")
 def restore_job(encoded_url: str) -> JSONResponse:
-    job_url = decode_url(encoded_url)
-    from applypilot.apply.launcher import mark_job
-    mark_job(job_url, "restore")
+    _mark_job(decode_url(encoded_url), "restore")
     return JSONResponse({"ok": True, "status": "restored"})
 
 
 @router.post("/api/jobs/{encoded_url}/mark-status")
 async def mark_status(encoded_url: str, request: Request) -> JSONResponse:
-    job_url = decode_url(encoded_url)
     body = await request.json()
     new_status = body.get("status", "")
     allowed = {"applied", "interview", "offer", "rejected"}
     if new_status not in allowed:
         raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
-    from applypilot.apply.launcher import mark_job
-    mark_job(job_url, new_status)
+    _mark_job(decode_url(encoded_url), new_status)
     return JSONResponse({"ok": True, "status": new_status})
 
 

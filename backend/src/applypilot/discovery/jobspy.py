@@ -459,12 +459,28 @@ def _full_crawl(
     # Ensure DB schema is ready
     init_db()
 
+    # Import scheduler helpers for freshness tracking
+    from applypilot.scheduler import is_stale, record_run_start, record_run_done
+
     total_new = 0
     total_existing = 0
     total_errors = 0
+    total_cached = 0
     completed = 0
 
     for s in searches:
+        label = f"\"{s['query']}\" in {s['location']}"
+
+        # Check if this combo was recently scraped — skip if fresh
+        if not is_stale(s["query"], s["location"], sites):
+            log.info("[%s] Cached — results are fresh (< %.0fh old)", label, 2.0)
+            total_cached += 1
+            completed += 1
+            continue
+
+        # Record that we're starting this combo
+        run_id = record_run_start(s["query"], s["location"], sites)
+
         result = _run_one_search(
             s, sites, results_per_site, hours_old,
             proxy_config, defaults, max_retries,
@@ -475,20 +491,25 @@ def _full_crawl(
         total_existing += result["existing"]
         total_errors += result["errors"]
 
+        record_run_done(run_id, result["new"], "done" if not result["errors"] else "error")
+
         if completed % 5 == 0 or completed == len(searches):
-            log.info("Progress: %d/%d queries done (%d new, %d dupes, %d errors)",
-                     completed, len(searches), total_new, total_existing, total_errors)
+            log.info("Progress: %d/%d queries done (%d new, %d dupes, %d cached, %d errors)",
+                     completed, len(searches), total_new, total_existing, total_cached, total_errors)
 
     # Final stats
     conn = get_connection()
     db_total = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 
-    log.info("Full crawl complete: %d new | %d dupes | %d errors | %d total in DB",
-             total_new, total_existing, total_errors, db_total)
+    log.info(
+        "Full crawl complete: %d new | %d dupes | %d cached | %d errors | %d total in DB",
+        total_new, total_existing, total_cached, total_errors, db_total,
+    )
 
     return {
         "new": total_new,
         "existing": total_existing,
+        "cached": total_cached,
         "errors": total_errors,
         "db_total": db_total,
         "queries": len(searches),

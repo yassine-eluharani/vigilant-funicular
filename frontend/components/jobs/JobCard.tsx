@@ -9,6 +9,7 @@ interface JobCardProps {
   onSelect: (job: Job) => void;
   onDismiss: (job: Job) => void;
   onMarkApplied: (job: Job) => void;
+  onUpgrade?: () => void;
 }
 
 function CompanyAvatar({ name }: { name: string }) {
@@ -47,7 +48,51 @@ function StatusBadge({ status }: { status: string | null }) {
   );
 }
 
-export function JobCard({ job, onSelect, onDismiss, onMarkApplied }: JobCardProps) {
+export function JobCard({ job, onSelect, onDismiss, onMarkApplied, onUpgrade }: JobCardProps) {
+  if (job.locked) {
+    return (
+      <div
+        className="relative bg-void-surface border border-void-border rounded-lg p-4 overflow-hidden cursor-pointer animate-fade-in"
+        onClick={onUpgrade}
+      >
+        {/* Blurred background content */}
+        <div className="blur-sm select-none pointer-events-none">
+          <div className="flex items-start gap-3 mb-3">
+            <div className="w-9 h-9 rounded-lg bg-void-raised border border-void-border" />
+            <div className="flex-1 min-w-0">
+              <h3 className="text-sm font-medium text-void-text truncate leading-5">{job.title}</h3>
+              <div className="h-3 w-24 bg-void-raised rounded mt-1" />
+            </div>
+            <ScoreBadge score={job.fit_score} size="sm" />
+          </div>
+          <div className="space-y-1.5 mb-3">
+            <div className="h-3 w-full bg-void-raised rounded" />
+            <div className="h-3 w-4/5 bg-void-raised rounded" />
+          </div>
+          <div className="h-8 bg-void-raised rounded border border-void-border" />
+        </div>
+
+        {/* Lock overlay */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-void-bg/60 backdrop-blur-[1px] gap-2">
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500/15 border border-amber-500/30">
+            <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 text-amber-400">
+              <path d="M8 1a3.5 3.5 0 0 0-3.5 3.5V6A1.5 1.5 0 0 0 3 7.5v5A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-5A1.5 1.5 0 0 0 11.5 6V4.5A3.5 3.5 0 0 0 8 1Zm2.5 5V4.5a2.5 2.5 0 0 0-5 0V6h5Z" />
+            </svg>
+            <span className="text-xs font-medium text-amber-300">
+              {job.fit_score}/10 match — Pro only
+            </span>
+          </div>
+          <button
+            onClick={(e) => { e.stopPropagation(); onUpgrade?.(); }}
+            className="text-xs text-void-accent hover:underline"
+          >
+            Upgrade to unlock →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className="

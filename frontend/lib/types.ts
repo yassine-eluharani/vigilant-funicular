@@ -11,7 +11,7 @@ export interface Job {
   url: string;
   url_encoded: string;
   title: string;
-  company: string;
+  company: string | null;
   site: string | null;
   location: string | null;
   salary: string | null;
@@ -26,10 +26,24 @@ export interface Job {
   tailored_at: string | null;
   has_pdf: boolean;
   has_cover_pdf: boolean;
+  locked?: boolean;
   // Detail fields (only present on single-job fetch)
   resume_text?: string;
   cover_letter_text?: string;
   full_description?: string;
+}
+
+// ── User / Tier ───────────────────────────────────────────────────────────────
+
+export interface UserInfo {
+  id: number;
+  email: string;
+  full_name: string;
+  tier: "free" | "pro";
+  tailors_used: number;
+  covers_used: number;
+  tailor_limit: number | null;
+  cover_limit: number | null;
 }
 
 export interface JobsResponse {
@@ -86,35 +100,6 @@ export interface Task {
   error: string | null;
   log_lines: string[];
   log_total: number;
-}
-
-// ── Apply Workers ─────────────────────────────────────────────────────────────
-
-export interface WorkerState {
-  worker_id: number;
-  status: string; // starting | applying | applied | failed | expired | captcha | idle | done
-  job_title: string;
-  company: string;
-  score: number;
-  start_time: number;
-  actions: number;
-  last_action: string;
-  jobs_applied: number;
-  jobs_failed: number;
-  jobs_done: number;
-  total_cost: number;
-  log_file: string | null;
-}
-
-export interface ApplyStatus {
-  running: boolean;
-  workers: WorkerState[];
-  events: string[];
-  totals: {
-    applied: number;
-    failed: number;
-    cost: number;
-  };
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────────
@@ -176,10 +161,8 @@ export interface Profile {
 // ── System Status ─────────────────────────────────────────────────────────────
 
 export interface SystemStatus {
-  tier: 1 | 2 | 3;
+  tier: 1 | 2;
   tier_label: string;
   llm_provider: string;
   llm_model: string;
-  has_chrome: boolean;
-  has_claude_cli: boolean;
 }

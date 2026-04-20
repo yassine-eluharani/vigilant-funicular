@@ -10,6 +10,10 @@ from applypilot.web.auth import (
     create_token,
     create_user,
     get_current_user,
+    get_user_record,
+    maybe_reset_usage,
+    FREE_TAILOR_LIMIT,
+    FREE_COVER_LIMIT,
 )
 
 router = APIRouter()
@@ -55,8 +59,30 @@ async def login(request: Request) -> JSONResponse:
 
 @router.get("/api/auth/me")
 def me(user: dict = Depends(get_current_user)) -> JSONResponse:
+    from applypilot.database import get_connection
+    user_id = int(user["sub"])
+    conn = get_connection()
+    maybe_reset_usage(conn, user_id)
+    record = get_user_record(user_id)
+    is_free = record["tier"] == "free"
     return JSONResponse({
-        "id": user.get("sub"),
-        "email": user.get("email"),
-        "full_name": user.get("name"),
+        "id": record["id"],
+        "email": record["email"],
+        "full_name": record["full_name"],
+        "tier": record["tier"],
+        "tailors_used": record["tailors_used"],
+        "covers_used": record["covers_used"],
+        "tailor_limit": FREE_TAILOR_LIMIT if is_free else None,
+        "cover_limit": FREE_COVER_LIMIT if is_free else None,
     })
+
+
+@router.post("/api/auth/upgrade")
+def upgrade(user: dict = Depends(get_current_user)) -> JSONResponse:
+    """Upgrade user to Pro. Placeholder — replace with Stripe webhook in production."""
+    from applypilot.database import get_connection
+    user_id = int(user["sub"])
+    conn = get_connection()
+    conn.execute("UPDATE users SET tier = 'pro' WHERE id = ?", (user_id,))
+    conn.commit()
+    return JSONResponse({"ok": True, "tier": "pro"})

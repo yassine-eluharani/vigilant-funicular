@@ -3,10 +3,10 @@ import type {
   JobsResponse,
   Stats,
   Task,
-  ApplyStatus,
   Profile,
   SystemStatus,
   AuthResponse,
+  UserInfo,
 } from "./types";
 import { getToken, clearToken } from "./auth";
 
@@ -116,25 +116,6 @@ export const runPipeline = (opts: PipelineRunOptions): Promise<{ task_id: string
 export const getTask = (taskId: string, since = 0): Promise<Task> =>
   req(`/api/tasks/${taskId}?since=${since}`);
 
-// ── Apply workers ─────────────────────────────────────────────────────────────
-
-export const getApplyStatus = (): Promise<ApplyStatus> => req("/api/apply/status");
-
-export interface ApplyStartOptions {
-  workers?: number;
-  limit?: number;
-  min_score?: number;
-  headless?: boolean;
-  continuous?: boolean;
-  model?: string;
-}
-
-export const startApply = (opts: ApplyStartOptions): Promise<{ ok: boolean; pid?: number }> =>
-  req("/api/apply/start", { method: "POST", body: JSON.stringify(opts) });
-
-export const stopApply = (): Promise<{ ok: boolean }> =>
-  req("/api/apply/stop", { method: "POST" });
-
 // ── Config ────────────────────────────────────────────────────────────────────
 
 export const getProfile = (): Promise<Profile> => req("/api/profile");
@@ -179,6 +160,19 @@ export async function parseResumeCv(text: string): Promise<{ ok: boolean; extrac
   });
 }
 
+// ── User / Tier ───────────────────────────────────────────────────────────────
+
+export const getMe = (): Promise<UserInfo> => req("/api/auth/me");
+export const upgradeAccount = (): Promise<{ ok: boolean; tier: string }> =>
+  req("/api/auth/upgrade", { method: "POST" });
+
+// ── Scheduler ─────────────────────────────────────────────────────────────────
+
+export const getSchedulerStatus = (): Promise<{ last_sync: string | null; jobs_found: number }> =>
+  req("/api/scheduler/status");
+export const triggerScheduler = (): Promise<{ ok: boolean; task_id: string }> =>
+  req("/api/scheduler/trigger", { method: "POST" });
+
 // ── System ────────────────────────────────────────────────────────────────────
 
 export const getSystemStatus = (): Promise<SystemStatus> => req("/api/system/status");
@@ -193,4 +187,3 @@ export const purgeDatabase = (): Promise<{ deleted: number }> =>
 export const resumeUrl  = (encodedUrl: string) => `${BASE}/api/resume/${encodedUrl}`;
 export const coverUrl   = (encodedUrl: string) => `${BASE}/api/cover-letter/${encodedUrl}`;
 export const sseTaskUrl = (taskId: string)     => `${BASE}/api/stream/task/${taskId}`;
-export const sseApplyUrl = ()                   => `${BASE}/api/stream/apply`;
