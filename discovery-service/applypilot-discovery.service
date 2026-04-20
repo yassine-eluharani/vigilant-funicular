@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=applypilot
 WorkingDirectory=/opt/applypilot/discovery-service
-ExecStart=/usr/local/bin/python main.py
+ExecStart=/usr/bin/env python3.11 main.py
 Restart=on-failure
 RestartSec=30
 

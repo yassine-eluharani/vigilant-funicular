@@ -18,9 +18,42 @@ else
 fi
 chown -R "$SERVICE_USER":"$SERVICE_USER" "$INSTALL_DIR"
 
+echo "=== Resolving Python 3.11+ ==="
+# Pick the first available python that is >= 3.11
+PYTHON=""
+for candidate in python3.13 python3.12 python3.11; do
+    if command -v "$candidate" &>/dev/null; then
+        PYTHON="$candidate"
+        break
+    fi
+done
+
+if [ -z "$PYTHON" ]; then
+    echo "ERROR: Python 3.11+ not found. Install it first, e.g.:"
+    echo "  # Debian/Ubuntu via deadsnakes:"
+    echo "  apt install software-properties-common"
+    echo "  add-apt-repository ppa:deadsnakes/ppa"
+    echo "  apt update && apt install python3.11 python3.11-venv python3.11-dev"
+    echo ""
+    echo "  # Or build from source:"
+    echo "  apt install wget build-essential libssl-dev libffi-dev zlib1g-dev"
+    echo "  wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz"
+    echo "  tar xf Python-3.11.9.tgz && cd Python-3.11.9"
+    echo "  ./configure --enable-optimizations && make -j\$(nproc) && make altinstall"
+    exit 1
+fi
+echo "Using $PYTHON ($(${PYTHON} --version))"
+
+echo "=== Installing build tools and bootstrapping pip ==="
+apt-get install -y --no-install-recommends \
+    gcc build-essential python3-dev libssl-dev libffi-dev curl
+curl -sS https://bootstrap.pypa.io/get-pip.py | "$PYTHON"
+
+PIP="$PYTHON -m pip"
+
 echo "=== Installing Python deps ==="
-pip3 install -r "$INSTALL_DIR/discovery-service/requirements.txt"
-pip3 install -e "$INSTALL_DIR/backend"
+$PIP install -r "$INSTALL_DIR/discovery-service/requirements.txt"
+$PIP install -e "$INSTALL_DIR/backend"
 
 echo "=== Installing systemd service ==="
 cp "$INSTALL_DIR/discovery-service/applypilot-discovery.service" /etc/systemd/system/
