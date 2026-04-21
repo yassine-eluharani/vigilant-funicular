@@ -60,17 +60,109 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
 
 
 def _turso_connection(url: str, token: str) -> sqlite3.Connection:
-    """Return a libsql connection with sqlite3-compatible interface."""
+    """Return an HTTP-based Turso connection with sqlite3-compatible interface."""
     if not hasattr(_local, "turso_conn"):
-        try:
-            import libsql_experimental as libsql
-        except ImportError:
-            raise RuntimeError(
-                "Install libsql-experimental for Turso support:\n"
-                "  pip install libsql-experimental"
-            )
-        _local.turso_conn = libsql.connect(database=url, auth_token=token)
+        _local.turso_conn = _TursoConnection(url, token)
     return _local.turso_conn
+
+
+class _TursoCursor:
+    """Minimal sqlite3.Cursor-compatible wrapper over Turso HTTP responses."""
+
+    def __init__(self, results: list, lastrowid: int | None = None):
+        self._rows = results
+        self.lastrowid = lastrowid
+        self.description = None
+        if results:
+            # Build description from first row keys so sqlite3.Row-like access works
+            first = results[0]
+            if isinstance(first, dict):
+                self.description = [(k, None, None, None, None, None, None) for k in first]
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self):
+        return self._rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _TursoRow(dict):
+    """dict subclass that supports both row["col"] and row[0] index access."""
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+    def keys(self):
+        return super().keys()
+
+
+class _TursoConnection:
+    """sqlite3.Connection-compatible wrapper that talks to Turso over HTTPS."""
+
+    def __init__(self, url: str, token: str):
+        import httpx
+        # Convert libsql:// → https://
+        self._http_url = url.replace("libsql://", "https://") + "/v2/pipeline"
+        self._headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        self._client = httpx.Client(timeout=30)
+        self.row_factory = None  # accepted but unused — rows always behave like sqlite3.Row
+
+    def _execute_remote(self, sql: str, parameters: tuple = ()) -> _TursoCursor:
+        args = [{"type": "integer" if isinstance(p, int) else
+                          "float"   if isinstance(p, float) else
+                          "null"    if p is None else "text",
+                 "value": str(p) if p is not None else None}
+                for p in parameters]
+
+        payload = {
+            "requests": [
+                {"type": "execute", "stmt": {"sql": sql, "args": args}},
+                {"type": "close"},
+            ]
+        }
+        resp = self._client.post(self._http_url, json=payload, headers=self._headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+        result = data["results"][0]
+        if result.get("type") == "error":
+            raise sqlite3.OperationalError(result["error"]["message"])
+
+        response = result.get("response", {})
+        rows_data = response.get("result", {})
+        cols = [c["name"] for c in rows_data.get("cols", [])]
+        raw_rows = rows_data.get("rows", [])
+
+        rows = []
+        for raw in raw_rows:
+            row = _TursoRow()
+            for col, cell in zip(cols, raw):
+                row[col] = cell.get("value") if cell.get("type") != "null" else None
+            rows.append(row)
+
+        # lastrowid from INSERT
+        lastrowid = rows_data.get("last_insert_rowid")
+        if lastrowid is not None:
+            lastrowid = int(lastrowid)
+
+        return _TursoCursor(rows, lastrowid)
+
+    def execute(self, sql: str, parameters: tuple = ()) -> _TursoCursor:
+        return self._execute_remote(sql, tuple(parameters))
+
+    def commit(self) -> None:
+        pass  # Turso auto-commits each statement
+
+    def close(self) -> None:
+        self._client.close()
 
 
 def close_connection(db_path: Path | str | None = None) -> None:

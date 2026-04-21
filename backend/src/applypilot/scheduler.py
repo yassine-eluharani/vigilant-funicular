@@ -206,6 +206,23 @@ def run_cycle() -> None:
     for combo in stale:
         _discover_combo(combo)
 
+    # Enrich any jobs that don't have a full description yet (including
+    # leftovers from previous cycles that failed or weren't processed)
+    from applypilot.database import get_connection
+    pending = get_connection().execute(
+        "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL"
+    ).fetchone()[0]
+
+    if pending > 0:
+        from applypilot.enrichment.detail import run_enrichment
+        log.info("[scheduler] Enriching %d pending jobs...", pending)
+        enrich_stats = run_enrichment(limit=50, workers=1)
+        log.info("[scheduler] Enrich done: %d ok, %d partial, %d error",
+                 enrich_stats.get("ok", 0), enrich_stats.get("partial", 0),
+                 enrich_stats.get("error", 0))
+    else:
+        log.info("[scheduler] No pending jobs to enrich")
+
     log.info("[scheduler] Cycle complete")
 
 

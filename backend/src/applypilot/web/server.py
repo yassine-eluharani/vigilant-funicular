@@ -18,9 +18,7 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(_app):
     from applypilot.database import init_db
-    from applypilot.scheduler import start_scheduler
     init_db()
-    start_scheduler()
     yield
 
 app = FastAPI(title="ApplyPilot API", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
