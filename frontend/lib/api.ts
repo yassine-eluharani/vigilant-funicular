@@ -17,7 +17,7 @@ const BASE =
     : (process.env.API_URL ?? "http://backend:8000");
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
+  const token = await getToken();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(init?.headers as Record<string, string>),
@@ -100,6 +100,14 @@ export const tailorJob = (encodedUrl: string, validation_mode = "normal") =>
     method: "POST",
   });
 
+export const coverJob = (encodedUrl: string, validation_mode = "normal") =>
+  req<{ task_id: string }>(`/api/jobs/${encodedUrl}/cover?validation_mode=${validation_mode}`, {
+    method: "POST",
+  });
+
+export const favoriteJob = (encodedUrl: string) =>
+  req<{ favorited: boolean }>(`/api/jobs/${encodedUrl}/favorite`, { method: "POST" });
+
 // ── Pipeline ──────────────────────────────────────────────────────────────────
 
 export interface PipelineRunOptions {
@@ -143,7 +151,7 @@ export const updateResumeText = (text: string) =>
   req("/api/config/resume", { method: "PUT", body: JSON.stringify({ text }) });
 
 export async function uploadResumePdf(file: File): Promise<{ ok: boolean; size: number; task_id: string }> {
-  const token = getToken();
+  const token = await getToken();
   const headers: Record<string, string> = {};
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const form = new FormData();

@@ -248,13 +248,15 @@ async def parse_resume(request: Request) -> JSONResponse:
 
     def _parse() -> str:
         client = get_client()
-        return client.chat([{"role": "user", "content": prompt}], temperature=0.1)
+        return client.chat([{"role": "user", "content": prompt}], temperature=0.1, json_mode=True)
 
     try:
         loop = asyncio.get_event_loop()
         raw = await loop.run_in_executor(None, _parse)
         match = _re.search(r"\{[\s\S]*\}", raw)
         if not match:
+            import logging as _logging
+            _logging.getLogger(__name__).error("Resume parse: no JSON in LLM response: %r", raw[:500])
             raise ValueError("No JSON in response")
         extracted = json.loads(match.group())
         return JSONResponse({"ok": True, "extracted": extracted})

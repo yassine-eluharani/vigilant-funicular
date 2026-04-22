@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from applypilot.web.auth import get_current_user
+from applypilot.web.auth import verify_clerk_jwt
 from applypilot.web.core import _tasks
 
-router = APIRouter(dependencies=[Depends(get_current_user)])
+router = APIRouter()
 
 _SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -19,8 +19,15 @@ _SSE_HEADERS = {
 
 
 @router.get("/api/stream/task/{task_id}")
-async def stream_task_logs(task_id: str):
-    """SSE: stream log lines for a background task until completion."""
+async def stream_task_logs(task_id: str, token: str | None = Query(None)):
+    """SSE: stream log lines for a background task until completion.
+
+    Auth is via ?token= query param because EventSource cannot send custom headers.
+    """
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    verify_clerk_jwt(token)  # raises 401 on invalid/expired token
+
     if task_id not in _tasks:
         raise HTTPException(status_code=404, detail="Task not found")
 

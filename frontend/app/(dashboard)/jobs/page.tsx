@@ -133,6 +133,7 @@ export default function JobsPage() {
   const { jobs, total, loading, loadingMore, hasMore, loadMore, refresh } = useJobs(filters);
   const { stats } = useStats();
 
+  const visibleJobs = jobs.filter((j) => !j.locked);
   const lockedCount = jobs.filter((j) => j.locked).length;
 
   useEffect(() => {
@@ -323,16 +324,40 @@ export default function JobsPage() {
           ) : (
             <>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                {jobs.map((job) => (
+                {visibleJobs.map((job) => (
                   <JobCard
                     key={job.url}
                     job={job}
                     onSelect={(j) => setSelectedUrl(j.url_encoded)}
                     onDismiss={handleDismiss}
                     onMarkApplied={handleMarkApplied}
+                    onRefresh={refresh}
                     onUpgrade={() => setShowUpgrade(true)}
                   />
                 ))}
+                {lockedCount > 0 && (
+                  <button
+                    onClick={() => setShowUpgrade(true)}
+                    className="col-span-full flex items-center gap-4 p-4 rounded-lg border border-amber-500/25 bg-amber-500/5 hover:bg-amber-500/10 transition-colors text-left group"
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-amber-400">
+                        <path fillRule="evenodd" d="M10 1a4.5 4.5 0 0 0-4.5 4.5V9H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6a2 2 0 0 0-2-2h-.5V5.5A4.5 4.5 0 0 0 10 1Zm3 8V5.5a3 3 0 1 0-6 0V9h6Z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-amber-300">
+                        {lockedCount} high-match job{lockedCount > 1 ? "s" : ""} locked
+                      </p>
+                      <p className="text-xs text-void-muted mt-0.5">
+                        These jobs score 8+ and are reserved for Pro users. Upgrade to see them.
+                      </p>
+                    </div>
+                    <span className="text-xs font-medium text-amber-300 border border-amber-500/30 rounded-lg px-3 py-1.5 group-hover:bg-amber-500/20 transition-colors shrink-0">
+                      Unlock →
+                    </span>
+                  </button>
+                )}
               </div>
               {hasMore && (
                 <div ref={sentinelRef} className="py-6 flex justify-center">

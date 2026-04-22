@@ -2,13 +2,13 @@
 
 import { useState, useEffect, useRef } from "react";
 
-export function useSSE(url: string | null) {
+export function useSSE(url: string | null, token?: string | null) {
   const [lines, setLines] = useState<string[]>([]);
   const [status, setStatus] = useState<"idle" | "connecting" | "streaming" | "done" | "error">("idle");
   const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    if (!url) {
+    if (!url || !token) {
       setLines([]);
       setStatus("idle");
       return;
@@ -17,7 +17,9 @@ export function useSSE(url: string | null) {
     setLines([]);
     setStatus("connecting");
 
-    const es = new EventSource(url);
+    // EventSource can't send Authorization headers — pass token as query param
+    const urlWithToken = `${url}${url.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+    const es = new EventSource(urlWithToken);
     esRef.current = es;
 
     es.onopen = () => setStatus("streaming");
@@ -40,7 +42,7 @@ export function useSSE(url: string | null) {
       es.close();
       esRef.current = null;
     };
-  }, [url]);
+  }, [url, token]);
 
   const reset = () => {
     esRef.current?.close();

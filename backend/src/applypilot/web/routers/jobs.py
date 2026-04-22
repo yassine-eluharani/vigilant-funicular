@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -107,6 +108,12 @@ def list_jobs(
             "(apply_status IS NULL OR apply_status NOT IN "
             "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))",
         ]
+    elif status == "favorites":
+        clauses = [
+            "COALESCE(favorited, 0) = 1",
+            "fit_score >= ?",
+            "fit_score <= ?",
+        ]
     else:
         clauses = [
             "tailored_resume_path IS NOT NULL",
@@ -138,7 +145,7 @@ def list_jobs(
     rows = conn.execute(
         f"SELECT url, title, company, site, location, salary, fit_score, score_reasoning, "
         f"tailored_resume_path, cover_letter_path, apply_status, applied_at, "
-        f"application_url, discovered_at, tailored_at "
+        f"application_url, discovered_at, tailored_at, COALESCE(favorited, 0) as favorited "
         f"FROM jobs WHERE {where} "
         f"ORDER BY fit_score DESC, discovered_at DESC "
         f"LIMIT ? OFFSET ?",
@@ -264,25 +271,50 @@ def tailor_job(
     return JSONResponse({"task_id": task_id})
 
 
+@router.post("/api/jobs/{encoded_url}/favorite")
+def toggle_favorite(encoded_url: str) -> JSONResponse:
+    job_url = decode_url(encoded_url)
+    conn = get_connection()
+    row = conn.execute("SELECT favorited FROM jobs WHERE url = ?", (job_url,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    new_val = 0 if row["favorited"] else 1
+    conn.execute("UPDATE jobs SET favorited = ? WHERE url = ?", (new_val, job_url))
+    conn.commit()
+    return JSONResponse({"favorited": bool(new_val)})
+
+
+@router.post("/api/jobs/{encoded_url}/cover")
+def cover_job(
+    encoded_url: str,
+    user: dict = Depends(get_current_user),
+    validation_mode: str = Query("normal"),
+) -> JSONResponse:
+    check_and_increment_usage(int(user["sub"]), "cover")
+    job_url = decode_url(encoded_url)
+    from applypilot.scoring.cover_letter import cover_letter_by_url
+    task_id = _start_task(cover_letter_by_url, job_url, validation_mode)
+    return JSONResponse({"task_id": task_id})
+
+
 # ---------------------------------------------------------------------------
 # Status mutations
 # ---------------------------------------------------------------------------
 
 def _mark_job(job_url: str, status: str) -> None:
     """Update apply_status for a job in the database."""
-    import datetime
-    with get_connection() as conn:
-        if status == "restore":
-            conn.execute(
-                "UPDATE jobs SET apply_status = NULL, applied_at = NULL WHERE url = ?",
-                (job_url,),
-            )
-        else:
-            conn.execute(
-                "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?",
-                (status, datetime.datetime.utcnow().isoformat(), job_url),
-            )
-        conn.commit()
+    conn = get_connection()
+    if status == "restore":
+        conn.execute(
+            "UPDATE jobs SET apply_status = NULL, applied_at = NULL WHERE url = ?",
+            (job_url,),
+        )
+    else:
+        conn.execute(
+            "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?",
+            (status, datetime.datetime.utcnow().isoformat(), job_url),
+        )
+    conn.commit()
 
 
 @router.post("/api/jobs/{encoded_url}/mark-applied")

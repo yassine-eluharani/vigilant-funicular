@@ -26,6 +26,7 @@ export interface Job {
   tailored_at: string | null;
   has_pdf: boolean;
   has_cover_pdf: boolean;
+  favorited?: boolean;
   locked?: boolean;
   // Detail fields (only present on single-job fetch)
   resume_text?: string;

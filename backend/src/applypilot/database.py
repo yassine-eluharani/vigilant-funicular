@@ -145,7 +145,16 @@ class _TursoConnection:
         for raw in raw_rows:
             row = _TursoRow()
             for col, cell in zip(cols, raw):
-                row[col] = cell.get("value") if cell.get("type") != "null" else None
+                type_ = cell.get("type")
+                val = cell.get("value")
+                if type_ == "null" or val is None:
+                    row[col] = None
+                elif type_ == "integer":
+                    row[col] = int(val)
+                elif type_ == "float":
+                    row[col] = float(val)
+                else:
+                    row[col] = val
             rows.append(row)
 
         # lastrowid from INSERT
@@ -205,8 +214,9 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            clerk_id      TEXT UNIQUE,
             email         TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
+            password_hash TEXT NOT NULL DEFAULT '',
             full_name     TEXT NOT NULL,
             created_at    TEXT NOT NULL,
             last_login    TEXT,
@@ -267,6 +277,9 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             cover_letter_at       TEXT,
             cover_attempts        INTEGER DEFAULT 0,
 
+            -- Favorites
+            favorited             INTEGER DEFAULT 0,
+
             -- Application stage
             applied_at            TEXT,
             apply_status          TEXT,
@@ -321,6 +334,8 @@ _ALL_COLUMNS: dict[str, str] = {
     "cover_letter_path": "TEXT",
     "cover_letter_at": "TEXT",
     "cover_attempts": "INTEGER DEFAULT 0",
+    # Favorites
+    "favorited": "INTEGER DEFAULT 0",
     # Application
     "applied_at": "TEXT",
     "apply_status": "TEXT",
@@ -371,6 +386,7 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
 
 
 _USER_EXTRA_COLUMNS: dict[str, str] = {
+    "clerk_id": "TEXT",  # UNIQUE enforced via index (ALTER TABLE can't add UNIQUE columns)
     "tier": "TEXT DEFAULT 'free'",
     "tailors_used": "INTEGER DEFAULT 0",
     "covers_used": "INTEGER DEFAULT 0",
@@ -387,6 +403,12 @@ def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
     for col, dtype in _USER_EXTRA_COLUMNS.items():
         if col not in existing:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
+    conn.commit()
+    # Unique index for clerk_id — created separately because ALTER TABLE ADD COLUMN
+    # doesn't support UNIQUE constraints in SQLite/Turso.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id)"
+    )
     conn.commit()
 
 

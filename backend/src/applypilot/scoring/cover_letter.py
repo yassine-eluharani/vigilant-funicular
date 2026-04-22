@@ -23,7 +23,13 @@ from applypilot.scoring.validator import (
 
 log = logging.getLogger(__name__)
 
-MAX_ATTEMPTS = 5  # max cross-run retries before giving up
+MAX_ATTEMPTS = 5
+
+
+def _make_prefix(job: dict) -> str:
+    safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
+    safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
+    return f"{safe_site}_{safe_title}"
 
 
 # ── Prompt Builder (profile-driven) ──────────────────────────────────────
@@ -237,10 +243,7 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             letter = generate_cover_letter(resume_text, job, profile,
                                           validation_mode=validation_mode)
 
-            # Build safe filename prefix
-            safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-            safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            prefix = _make_prefix(job)
 
             cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
@@ -302,4 +305,77 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         "generated": saved,
         "errors": error_count,
         "elapsed": elapsed,
+    }
+
+
+# ── Single-Job Entry Point ────────────────────────────────────────────────
+
+def cover_letter_by_url(job_url: str, validation_mode: str = "normal") -> dict:
+    """Generate a cover letter for a single job identified by URL.
+
+    Args:
+        job_url:         The job's primary URL (DB primary key).
+        validation_mode: "strict", "normal", or "lenient".
+
+    Returns:
+        {"status": str, "path": str|None, "pdf_path": str|None, "error": str|None}
+    """
+    profile = load_profile()
+    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    conn = get_connection()
+
+    row = conn.execute(
+        "SELECT * FROM jobs WHERE url = ? AND full_description IS NOT NULL",
+        (job_url,),
+    ).fetchone()
+
+    if not row:
+        return {
+            "status": "error",
+            "error": "Job not found or missing full description",
+            "path": None,
+            "pdf_path": None,
+        }
+
+    job = dict(row)
+
+    # Use tailored resume text if available, otherwise fall back to base resume
+    resume_src = resume_text
+    if job.get("tailored_resume_path") and Path(job["tailored_resume_path"]).exists():
+        try:
+            resume_src = Path(job["tailored_resume_path"]).read_text(encoding="utf-8")
+        except Exception:
+            pass
+
+    letter = generate_cover_letter(
+        resume_src, job, profile, max_retries=3, validation_mode=validation_mode
+    )
+
+    prefix = _make_prefix(job)
+
+    COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
+    cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
+    cl_path.write_text(letter, encoding="utf-8")
+
+    pdf_path = None
+    try:
+        from applypilot.scoring.pdf import convert_to_pdf
+        pdf_path = str(convert_to_pdf(cl_path))
+    except Exception:
+        log.debug("PDF generation failed for %s", cl_path, exc_info=True)
+
+    now = datetime.now(timezone.utc).isoformat()
+    # Always save the path — best attempt even if validation didn't fully pass.
+    conn.execute(
+        "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+        "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+        (str(cl_path), now, job_url),
+    )
+    conn.commit()
+
+    return {
+        "status": "ok",
+        "path": str(cl_path),
+        "pdf_path": pdf_path,
+        "error": None,
     }

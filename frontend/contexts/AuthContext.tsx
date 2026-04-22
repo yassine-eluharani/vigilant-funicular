@@ -1,8 +1,14 @@
 "use client";
 
-import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { useRouter } from "next/navigation";
-import { getToken, setToken, clearToken, isTokenValid } from "@/lib/auth";
+import { createContext, useContext, useEffect } from "react";
+import {
+  useUser,
+  useClerk,
+  useSignIn,
+  useSignUp,
+  useAuth as useClerkAuth,
+} from "@clerk/nextjs";
+import { setTokenFn } from "@/lib/auth";
 
 interface User {
   id: string;
@@ -28,96 +34,78 @@ const AuthContext = createContext<AuthContextValue>({
   logout: () => {},
 });
 
-const BASE =
-  typeof window !== "undefined"
-    ? (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000")
-    : (process.env.API_URL ?? "http://backend:8000");
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const router = useRouter();
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
+  const { isLoaded, isSignedIn, user } = useUser();
+  const { signOut } = useClerk();
+  const { isLoaded: siLoaded, signIn, setActive: siSetActive } = useSignIn();
+  const { isLoaded: suLoaded, signUp, setActive: suSetActive } = useSignUp();
+  const { getToken } = useClerkAuth();
 
-  // On mount: validate stored token
+  // Wire Clerk's token getter into lib/api.ts so all API calls get Authorization headers
   useEffect(() => {
-    const token = getToken();
-    if (!isTokenValid(token)) {
-      clearToken();
-      setIsLoading(false);
-      return;
+    setTokenFn(() => getToken());
+  }, [getToken]);
+
+  const login = async (email: string, password: string) => {
+    if (!siLoaded || !signIn) return { ok: false, error: "Auth not ready" };
+    try {
+      const result = await signIn.create({ identifier: email, password });
+      if (result.status === "complete") {
+        await siSetActive!({ session: result.createdSessionId });
+        return { ok: true };
+      }
+      return { ok: false, error: "Additional verification required" };
+    } catch (e: unknown) {
+      const err = e as { errors?: Array<{ message: string }> };
+      return { ok: false, error: err.errors?.[0]?.message ?? "Incorrect email or password" };
     }
-    fetch(`${BASE}/api/auth/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(async (r) => {
-        if (r.ok) {
-          const data = await r.json();
-          setUser({ id: data.id, email: data.email, full_name: data.full_name });
-          setIsAuthenticated(true);
-        } else {
-          clearToken();
+  };
+
+  const register = async (fullName: string, email: string, password: string) => {
+    if (!suLoaded || !signUp) return { ok: false, error: "Auth not ready" };
+    try {
+      const [firstName, ...rest] = fullName.trim().split(/\s+/);
+      const result = await signUp.create({
+        firstName,
+        lastName: rest.join(" ") || undefined,
+        emailAddress: email,
+        password,
+      });
+      if (result.status === "complete") {
+        await suSetActive!({ session: result.createdSessionId });
+        return { ok: true };
+      }
+      // Email verification required — prepare the verification email
+      await result.prepareEmailAddressVerification({ strategy: "email_code" });
+      return { ok: false, error: "Check your email for a verification code, then sign in." };
+    } catch (e: unknown) {
+      const err = e as { errors?: Array<{ message: string }> };
+      return { ok: false, error: err.errors?.[0]?.message ?? "Registration failed" };
+    }
+  };
+
+  const logout = () => signOut({ redirectUrl: "/" });
+
+  const userObj: User | null =
+    isSignedIn && user
+      ? {
+          id: user.id,
+          email: user.primaryEmailAddress?.emailAddress ?? "",
+          full_name: user.fullName ?? "",
         }
-      })
-      .catch(() => {
-        // Network issue — trust token expiry check
-        if (isTokenValid(token)) setIsAuthenticated(true);
-        else clearToken();
-      })
-      .finally(() => setIsLoading(false));
-  }, []);
-
-  const login = useCallback(async (email: string, password: string) => {
-    try {
-      const res = await fetch(`${BASE}/api/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        return { ok: false, error: body.detail ?? "Incorrect email or password" };
-      }
-      const { access_token, user: u } = await res.json();
-      setToken(access_token);
-      setUser(u);
-      setIsAuthenticated(true);
-      return { ok: true };
-    } catch {
-      return { ok: false, error: "Could not reach the server" };
-    }
-  }, []);
-
-  const register = useCallback(async (fullName: string, email: string, password: string) => {
-    try {
-      const res = await fetch(`${BASE}/api/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ full_name: fullName, email, password }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        return { ok: false, error: body.detail ?? "Registration failed" };
-      }
-      const { access_token, user: u } = await res.json();
-      setToken(access_token);
-      setUser(u);
-      setIsAuthenticated(true);
-      return { ok: true };
-    } catch {
-      return { ok: false, error: "Could not reach the server" };
-    }
-  }, []);
-
-  const logout = useCallback(() => {
-    clearToken();
-    setIsAuthenticated(false);
-    setUser(null);
-    router.push("/");
-  }, [router]);
+      : null;
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, user, login, register, logout }}>
+    <AuthContext.Provider
+      value={{
+        isAuthenticated: !!isSignedIn,
+        isLoading: !isLoaded,
+        user: userObj,
+        login,
+        register,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

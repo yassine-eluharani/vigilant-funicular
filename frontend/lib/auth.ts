@@ -1,32 +1,20 @@
-const TOKEN_KEY = "ap_token";
+/**
+ * Token getter registry.
+ * AuthContext registers Clerk's getToken() here on mount so that lib/api.ts
+ * can attach Authorization headers without depending on React context directly.
+ */
 
-export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
+type TokenFn = () => Promise<string | null>;
+
+let _tokenFn: TokenFn = async () => null;
+
+export function setTokenFn(fn: TokenFn): void {
+  _tokenFn = fn;
 }
 
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
-  // Also set a cookie so Next.js middleware can read it
-  document.cookie = `ap_token=${token}; path=/; max-age=${7 * 24 * 3600}; SameSite=Lax`;
+export async function getToken(): Promise<string | null> {
+  return _tokenFn();
 }
 
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
-  document.cookie = "ap_token=; path=/; max-age=0; SameSite=Lax";
-}
-
-/** Decode JWT expiry without verifying signature (client-side check only). */
-export function isTokenExpired(token: string): boolean {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    return payload.exp * 1000 < Date.now();
-  } catch {
-    return true;
-  }
-}
-
-export function isTokenValid(token: string | null): boolean {
-  if (!token) return false;
-  return !isTokenExpired(token);
-}
+// No-op kept for call sites that still reference it (middleware cookie is gone)
+export function clearToken(): void {}

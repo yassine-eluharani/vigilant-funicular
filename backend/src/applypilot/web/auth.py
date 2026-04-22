@@ -1,89 +1,172 @@
-"""JWT authentication utilities and FastAPI dependency."""
+"""Clerk JWT authentication utilities and FastAPI dependency."""
 
 from __future__ import annotations
 
+import base64
 import os
-from datetime import datetime, timedelta, timezone
+import time
+from datetime import datetime, timezone
 
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-import bcrypt
-from jose import JWTError, jwt
-
-_JWT_SECRET = os.environ.get("JWT_SECRET", "change-me-in-production")
-_JWT_ALGORITHM = "HS256"
-_JWT_EXPIRY_DAYS = 30
+from jose import jwt
+from jose.exceptions import ExpiredSignatureError, JWTError
 
 _bearer = HTTPBearer(auto_error=False)
 
 # ── Tier limits ───────────────────────────────────────────────────────────────
 
-FREE_TAILOR_LIMIT = 3       # tailored resumes per month
-FREE_COVER_LIMIT = 1        # cover letters per month
-BLUR_SCORE_THRESHOLD = 8    # jobs scoring >= this are locked for free users
+FREE_TAILOR_LIMIT = 3
+FREE_COVER_LIMIT = 1
+BLUR_SCORE_THRESHOLD = 8
 
 
-# ── Password helpers ──────────────────────────────────────────────────────────
+# ── Clerk JWKS verification ───────────────────────────────────────────────────
 
-def hash_password(plain: str) -> str:
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+_jwks_cache: dict | None = None
+_jwks_cached_at: float = 0
+_JWKS_TTL = 3600  # re-fetch JWKS every hour
 
 
-# ── Token helpers ─────────────────────────────────────────────────────────────
-
-def create_token(user_id: int, email: str, full_name: str) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(days=_JWT_EXPIRY_DAYS)
-    return jwt.encode(
-        {"exp": expire, "sub": str(user_id), "email": email, "name": full_name},
-        os.environ.get("JWT_SECRET", _JWT_SECRET),
-        algorithm=_JWT_ALGORITHM,
+def _get_jwks_url() -> str:
+    url = os.environ.get("CLERK_JWKS_URL", "")
+    if url:
+        return url
+    pk = (
+        os.environ.get("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "")
+        or os.environ.get("CLERK_PUBLISHABLE_KEY", "")
+    )
+    if pk:
+        try:
+            b64 = pk.split("_", 2)[-1]
+            padded = b64 + "=" * (-len(b64) % 4)
+            frontend_api = base64.b64decode(padded).decode().rstrip("$")
+            return f"https://{frontend_api}/.well-known/jwks.json"
+        except Exception:
+            pass
+    raise RuntimeError(
+        "Clerk not configured. Set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY or CLERK_JWKS_URL."
     )
 
 
-# ── User CRUD ─────────────────────────────────────────────────────────────────
-
-def create_user(email: str, password: str, full_name: str) -> dict:
-    """Register a new user. Raises 409 if email already exists."""
-    from applypilot.database import get_connection, init_db
-    init_db()
-    conn = get_connection()
-    existing = conn.execute("SELECT id FROM users WHERE email = ?", (email.lower(),)).fetchone()
-    if existing:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
-    now = datetime.now(timezone.utc).isoformat()
-    cur = conn.execute(
-        "INSERT INTO users (email, password_hash, full_name, created_at) VALUES (?, ?, ?, ?)",
-        (email.lower(), hash_password(password), full_name, now),
-    )
-    conn.commit()
-    return {"id": cur.lastrowid, "email": email.lower(), "full_name": full_name}
+def _fetch_jwks(force: bool = False) -> dict:
+    global _jwks_cache, _jwks_cached_at
+    if not force and _jwks_cache and (time.time() - _jwks_cached_at) < _JWKS_TTL:
+        return _jwks_cache
+    resp = httpx.get(_get_jwks_url(), timeout=10)
+    resp.raise_for_status()
+    _jwks_cache = resp.json()
+    _jwks_cached_at = time.time()
+    return _jwks_cache
 
 
-def authenticate_user(email: str, password: str) -> dict:
-    """Verify email + password. Raises 401 if invalid."""
-    from applypilot.database import get_connection, init_db
-    init_db()
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT id, email, password_hash, full_name FROM users WHERE email = ?",
-        (email.lower(),),
-    ).fetchone()
-    if not row or not verify_password(password, row["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+def verify_clerk_jwt(token: str) -> dict:
+    """Verify a Clerk session JWT (RS256). Returns decoded payload."""
+    try:
+        header = jwt.get_unverified_header(token)
+    except JWTError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Malformed token: {e}")
+
+    kid = header.get("kid")
+
+    def _find_key(jwks: dict):
+        return next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+
+    key = _find_key(_fetch_jwks())
+    if not key:
+        # JWKS may be stale — refresh once
+        key = _find_key(_fetch_jwks(force=True))
+    if not key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token signing key not found")
+
+    try:
+        return jwt.decode(token, key, algorithms=["RS256"], options={"verify_aud": False})
+    except ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired")
+    except JWTError as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {e}")
+
+
+# ── Clerk API fallback (fetch email/name when JWT lacks them) ─────────────────
+
+def _fetch_clerk_user(clerk_id: str) -> dict | None:
+    secret_key = os.environ.get("CLERK_SECRET_KEY", "")
+    if not secret_key:
+        return None
+    try:
+        resp = httpx.get(
+            f"https://api.clerk.com/v1/users/{clerk_id}",
+            headers={"Authorization": f"Bearer {secret_key}"},
+            timeout=10,
         )
-    # Update last_login
+        resp.raise_for_status()
+        data = resp.json()
+        emails = data.get("email_addresses", [])
+        primary_id = data.get("primary_email_address_id")
+        email = next((e["email_address"] for e in emails if e["id"] == primary_id), None)
+        if not email and emails:
+            email = emails[0]["email_address"]
+        first = data.get("first_name") or ""
+        last = data.get("last_name") or ""
+        return {"email": email, "full_name": f"{first} {last}".strip() or None}
+    except Exception:
+        return None
+
+
+# ── User upsert / sync ────────────────────────────────────────────────────────
+
+def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict:
+    """Create or update a local user row from Clerk identity. Returns the full DB row."""
+    from applypilot.database import get_connection, init_db
+    init_db()
+    conn = get_connection()
+
+    now = datetime.now(timezone.utc).isoformat()
+    existing = conn.execute("SELECT * FROM users WHERE clerk_id = ?", (clerk_id,)).fetchone()
+
+    if existing:
+        if email or full_name:
+            conn.execute(
+                "UPDATE users SET "
+                "email = COALESCE(?, email), "
+                "full_name = COALESCE(?, full_name), "
+                "last_login = ? "
+                "WHERE clerk_id = ?",
+                (email, full_name, now, clerk_id),
+            )
+            conn.commit()
+        row = conn.execute("SELECT * FROM users WHERE clerk_id = ?", (clerk_id,)).fetchone()
+        return dict(row)
+
+    # New user — fall back to Clerk API if JWT didn't carry email/name
+    if not email or not full_name:
+        clerk_data = _fetch_clerk_user(clerk_id)
+        if clerk_data:
+            email = email or clerk_data.get("email")
+            full_name = full_name or clerk_data.get("full_name")
+
     conn.execute(
-        "UPDATE users SET last_login = ? WHERE id = ?",
-        (datetime.now(timezone.utc).isoformat(), row["id"]),
+        "INSERT OR IGNORE INTO users (clerk_id, email, password_hash, full_name, created_at) "
+        "VALUES (?, ?, '', ?, ?)",
+        (clerk_id, email or f"{clerk_id}@unknown.clerk", full_name or "Unknown", now),
     )
     conn.commit()
-    return {"id": row["id"], "email": row["email"], "full_name": row["full_name"]}
+    row = conn.execute("SELECT * FROM users WHERE clerk_id = ?", (clerk_id,)).fetchone()
+    return dict(row)
+
+
+def _sync_clerk_user(clerk_id: str, email: str | None, full_name: str | None) -> None:
+    """Called by the Clerk webhook to proactively sync a user."""
+    upsert_user(clerk_id, email, full_name)
+
+
+def _delete_clerk_user(clerk_id: str) -> None:
+    """Remove a local user when Clerk fires user.deleted."""
+    from applypilot.database import get_connection
+    conn = get_connection()
+    conn.execute("DELETE FROM users WHERE clerk_id = ?", (clerk_id,))
+    conn.commit()
 
 
 # ── Tier / usage helpers ──────────────────────────────────────────────────────
@@ -105,9 +188,7 @@ def get_user_record(user_id: int) -> dict:
 
 def maybe_reset_usage(conn, user_id: int) -> None:
     """Reset monthly usage counters when the calendar month turns over."""
-    row = conn.execute(
-        "SELECT usage_reset_at FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
+    row = conn.execute("SELECT usage_reset_at FROM users WHERE id = ?", (user_id,)).fetchone()
     if not row:
         return
     now = datetime.now(timezone.utc)
@@ -115,7 +196,7 @@ def maybe_reset_usage(conn, user_id: int) -> None:
     if reset_at:
         last = datetime.fromisoformat(reset_at)
         if last.year == now.year and last.month == now.month:
-            return  # same month — nothing to reset
+            return
     conn.execute(
         "UPDATE users SET tailors_used = 0, covers_used = 0, usage_reset_at = ? WHERE id = ?",
         (now.isoformat(), user_id),
@@ -124,11 +205,7 @@ def maybe_reset_usage(conn, user_id: int) -> None:
 
 
 def check_and_increment_usage(user_id: int, kind: str) -> None:
-    """Check the free-tier monthly limit and increment the counter.
-
-    Raises HTTP 402 if the limit is reached.
-    kind: 'tailor' | 'cover'
-    """
+    """Check the free-tier monthly limit and increment the counter. Raises 402 if exceeded."""
     from applypilot.database import get_connection
     conn = get_connection()
     maybe_reset_usage(conn, user_id)
@@ -136,19 +213,17 @@ def check_and_increment_usage(user_id: int, kind: str) -> None:
         "SELECT tier, tailors_used, covers_used FROM users WHERE id = ?", (user_id,)
     ).fetchone()
     if not row or row["tier"] == "pro":
-        return  # pro users have no limits
-
+        return
     if kind == "tailor" and row["tailors_used"] >= FREE_TAILOR_LIMIT:
         raise HTTPException(
             status_code=402,
-            detail=f"Free plan limit: {FREE_TAILOR_LIMIT} tailored resumes per month. Upgrade to Pro for unlimited.",
+            detail=f"Free plan limit: {FREE_TAILOR_LIMIT} tailored resumes per month. Upgrade to Pro.",
         )
     if kind == "cover" and row["covers_used"] >= FREE_COVER_LIMIT:
         raise HTTPException(
             status_code=402,
-            detail=f"Free plan limit: {FREE_COVER_LIMIT} cover letter per month. Upgrade to Pro for unlimited.",
+            detail=f"Free plan limit: {FREE_COVER_LIMIT} cover letter per month. Upgrade to Pro.",
         )
-
     field = "tailors_used" if kind == "tailor" else "covers_used"
     conn.execute(f"UPDATE users SET {field} = {field} + 1 WHERE id = ?", (user_id,))
     conn.commit()
@@ -159,20 +234,22 @@ def check_and_increment_usage(user_id: int, kind: str) -> None:
 def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict:
-    """Validate Bearer JWT. Returns payload dict with id, email, name."""
+    """Verify Clerk Bearer JWT. Upserts the user in local DB. Returns the DB row.
+
+    Adds a 'sub' key (= str(id)) for backward compat with callers that do int(user["sub"]).
+    """
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    try:
-        secret = os.environ.get("JWT_SECRET", _JWT_SECRET)
-        payload = jwt.decode(credentials.credentials, secret, algorithms=[_JWT_ALGORITHM])
-        return payload
-    except JWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    payload = verify_clerk_jwt(credentials.credentials)
+    clerk_id: str = payload.get("sub", "")
+    # JWT template claims (optional — configure in Clerk dashboard)
+    email: str | None = payload.get("email")
+    name: str | None = payload.get("name") or payload.get("full_name")
+
+    user = upsert_user(clerk_id, email, name)
+    user["sub"] = str(user["id"])  # backward compat for int(user["sub"]) callers
+    return user

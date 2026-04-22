@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { StageSelector } from "@/components/pipeline/StageSelector";
 import { LogStream } from "@/components/pipeline/LogStream";
 import { FunnelChart } from "@/components/pipeline/FunnelChart";
@@ -13,6 +14,13 @@ import { useToast } from "@/components/ui/Toast";
 export default function PipelinePage() {
   const toast = useToast();
   const { stats } = useStats(5_000);
+  const { getToken } = useAuth();
+  const [sseToken, setSseToken] = useState<string | null>(null);
+
+  // Fetch a fresh token for SSE (EventSource can't send headers)
+  useEffect(() => {
+    getToken().then(setSseToken);
+  }, [getToken]);
 
   // Controls
   const [stages, setStages] = useState<string[]>(["discover", "enrich", "filter", "score"]);
@@ -25,9 +33,9 @@ export default function PipelinePage() {
   const [taskId, setTaskId] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
 
-  // SSE log streaming
+  // SSE log streaming — token passed as query param since EventSource can't send headers
   const sseUrl = taskId ? sseTaskUrl(taskId) : null;
-  const { lines, status: sseStatus, reset: resetSSE } = useSSE(sseUrl);
+  const { lines, status: sseStatus, reset: resetSSE } = useSSE(sseUrl, sseToken);
 
   const handleRun = useCallback(async () => {
     if (stages.length === 0) {

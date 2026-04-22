@@ -16,8 +16,6 @@ services:
       - APPLYPILOT_DIR=/data
       - PYTHONUNBUFFERED=1
       - CORS_ORIGINS=http://localhost:3000
-      - APP_PASSWORD=${APP_PASSWORD:-changeme}
-      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
     restart: "no"
 
   frontend:
@@ -25,15 +23,17 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: development
-    command: npm run dev
+    command: sh -c "npm install && npm run dev"
     ports:
       - "3000:3000"
     volumes:
       - ./frontend:/app           # Hot reload: mount source
-      - /app/node_modules         # Exclude node_modules from host mount
+      - /app/node_modules         # Keep container node_modules separate from host
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - NODE_ENV=development
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
     restart: "no"
     depends_on:
       - backend

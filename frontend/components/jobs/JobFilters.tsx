@@ -18,6 +18,7 @@ interface JobFiltersProps {
 
 const STATUSES = [
   { value: "pending",   label: "Pending" },
+  { value: "favorites", label: "⭐ Favorites" },
   { value: "ready",     label: "Ready to Apply" },
   { value: "applied",   label: "Applied" },
   { value: "dismissed", label: "Dismissed" },

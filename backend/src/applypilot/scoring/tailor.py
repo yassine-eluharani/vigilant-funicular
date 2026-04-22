@@ -27,6 +27,12 @@ from applypilot.scoring.validator import (
     validate_tailored_resume,
 )
 
+
+def _make_prefix(job: dict) -> str:
+    safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
+    safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
+    return f"{safe_site}_{safe_title}"
+
 log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 5  # max cross-run retries before giving up
@@ -490,9 +496,7 @@ def tailor_job_by_url(job_url: str, validation_mode: str = "normal") -> dict:
         resume_text, job, profile, max_retries=3, validation_mode=validation_mode
     )
 
-    safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-    safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-    prefix = f"{safe_site}_{safe_title}"
+    prefix = _make_prefix(job)
 
     TAILORED_DIR.mkdir(parents=True, exist_ok=True)
     txt_path = TAILORED_DIR / f"{prefix}.txt"
@@ -518,17 +522,13 @@ def tailor_job_by_url(job_url: str, validation_mode: str = "normal") -> dict:
             log.debug("PDF generation failed for %s", txt_path, exc_info=True)
 
     now = datetime.now(timezone.utc).isoformat()
-    if report["status"] in _success:
-        conn.execute(
-            "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
-            "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-            (str(txt_path), now, job_url),
-        )
-    else:
-        conn.execute(
-            "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-            (job_url,),
-        )
+    # Always save the path — even if validation didn't fully pass, the content
+    # is the best attempt and the user should be able to see and edit it.
+    conn.execute(
+        "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+        "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+        (str(txt_path), now, job_url),
+    )
     conn.commit()
 
     return {
@@ -576,10 +576,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             tailored, report = tailor_resume(resume_text, job, profile,
                                              validation_mode=validation_mode)
 
-            # Build safe filename prefix
-            safe_title = re.sub(r"[^\w\s-]", "", job["title"])[:50].strip().replace(" ", "_")
-            safe_site = re.sub(r"[^\w\s-]", "", job["site"])[:20].strip().replace(" ", "_")
-            prefix = f"{safe_site}_{safe_title}"
+            prefix = _make_prefix(job)
 
             # Save tailored resume text
             txt_path = TAILORED_DIR / f"{prefix}.txt"
