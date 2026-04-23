@@ -32,12 +32,13 @@ console = Console()
 # Stage definitions
 # ---------------------------------------------------------------------------
 
-STAGE_ORDER = ("discover", "enrich", "filter", "score", "tailor", "cover", "pdf")
+STAGE_ORDER = ("discover", "enrich", "filter", "index", "score", "tailor", "cover", "pdf")
 
 STAGE_META: dict[str, dict] = {
     "discover": {"desc": "Job discovery (JobSpy + Workday + smart extract)"},
     "enrich":   {"desc": "Detail enrichment (full descriptions + apply URLs)"},
     "filter":   {"desc": "Location filter (remove country-restricted remote jobs)"},
+    "index":    {"desc": "Job metadata indexing (extract structured fields once per job)"},
     "score":    {"desc": "LLM scoring (fit 1-10)"},
     "tailor":   {"desc": "Resume tailoring (LLM + validation)"},
     "cover":    {"desc": "Cover letter generation"},
@@ -50,7 +51,8 @@ _UPSTREAM: dict[str, str | None] = {
     "discover": None,
     "enrich":   "discover",
     "filter":   "enrich",
-    "score":    "filter",
+    "index":    "filter",
+    "score":    "index",
     "tailor":   "score",
     "cover":    "tailor",
     "pdf":      "cover",
@@ -123,33 +125,44 @@ def _run_filter() -> dict:
         return {"status": f"error: {e}"}
 
 
-def _run_score() -> dict:
+def _run_index() -> dict:
+    """Stage: Job metadata indexing — extract structured fields from each job once."""
+    try:
+        from applypilot.scoring.indexer import run_indexing
+        result = run_indexing()
+        return {"status": "ok", **result}
+    except Exception as e:
+        log.error("Indexing failed: %s", e)
+        return {"status": f"error: {e}"}
+
+
+def _run_score(user_id: int | None = None) -> dict:
     """Stage: LLM scoring — assign fit scores 1-10."""
     try:
         from applypilot.scoring.scorer import run_scoring
-        run_scoring()
+        run_scoring(user_id=user_id)
         return {"status": "ok"}
     except Exception as e:
         log.error("Scoring failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_tailor(min_score: int = 7, validation_mode: str = "normal") -> dict:
+def _run_tailor(user_id: int | None = None, min_score: int = 7, validation_mode: str = "normal") -> dict:
     """Stage: Resume tailoring — generate tailored resumes for high-fit jobs."""
     try:
         from applypilot.scoring.tailor import run_tailoring
-        run_tailoring(min_score=min_score, validation_mode=validation_mode)
+        run_tailoring(user_id=user_id, min_score=min_score, validation_mode=validation_mode)
         return {"status": "ok"}
     except Exception as e:
         log.error("Tailoring failed: %s", e)
         return {"status": f"error: {e}"}
 
 
-def _run_cover(min_score: int = 7, validation_mode: str = "normal") -> dict:
+def _run_cover(user_id: int | None = None, min_score: int = 7, validation_mode: str = "normal") -> dict:
     """Stage: Cover letter generation."""
     try:
         from applypilot.scoring.cover_letter import run_cover_letters
-        run_cover_letters(min_score=min_score, validation_mode=validation_mode)
+        run_cover_letters(user_id=user_id, min_score=min_score, validation_mode=validation_mode)
         return {"status": "ok"}
     except Exception as e:
         log.error("Cover letter generation failed: %s", e)
@@ -172,6 +185,7 @@ _STAGE_RUNNERS: dict[str, callable] = {
     "discover": _run_discover,
     "enrich":   _run_enrich,
     "filter":   _run_filter,
+    "index":    _run_index,
     "score":    _run_score,
     "tailor":   _run_tailor,
     "cover":    _run_cover,
@@ -236,6 +250,10 @@ class _StageTracker:
 # SQL to count pending work for each stage
 _PENDING_SQL: dict[str, str] = {
     "enrich": "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL",
+    "index": (
+        "SELECT COUNT(*) FROM jobs "
+        "WHERE full_description IS NOT NULL AND job_metadata_json IS NULL"
+    ),
     "filter": (
         "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL "
         "AND (apply_status IS NULL OR apply_status = 'failed')"
@@ -284,6 +302,7 @@ def _run_stage_streaming(
     min_score: int = 7,
     workers: int = 1,
     validation_mode: str = "normal",
+    user_id: int | None = None,
 ) -> None:
     """Run a single stage in streaming mode: loop until upstream done + no work.
 
@@ -293,6 +312,8 @@ def _run_stage_streaming(
     """
     runner = _STAGE_RUNNERS[stage]
     kwargs: dict = {}
+    if stage in ("score", "tailor", "cover"):
+        kwargs["user_id"] = user_id
     if stage in ("tailor", "cover"):
         kwargs["min_score"] = min_score
         kwargs["validation_mode"] = validation_mode
@@ -301,11 +322,11 @@ def _run_stage_streaming(
 
     upstream = _UPSTREAM[stage]
 
-    if stage in ("discover", "filter"):
+    if stage in ("discover", "filter", "index"):
         # These stages run once: discover does a full crawl internally,
-        # filter does a single pass over all enriched jobs.
+        # filter/index do a single pass over all eligible jobs.
         # Neither has a meaningful "pending work" concept that a loop would help.
-        if stage == "filter" and upstream:
+        if stage in ("filter", "index") and upstream:
             # Wait for enrich to finish before filtering
             tracker.wait(upstream)
         try:
@@ -351,7 +372,8 @@ def _run_stage_streaming(
 # ---------------------------------------------------------------------------
 
 def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
-                    validation_mode: str = "normal") -> dict:
+                    validation_mode: str = "normal",
+                    user_id: int | None = None) -> dict:
     """Execute stages one at a time (original behavior)."""
     results: list[dict] = []
     errors: dict[str, str] = {}
@@ -370,6 +392,8 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
 
         try:
             kwargs: dict = {}
+            if name in ("score", "tailor", "cover"):
+                kwargs["user_id"] = user_id
             if name in ("tailor", "cover"):
                 kwargs["min_score"] = min_score
                 kwargs["validation_mode"] = validation_mode
@@ -406,7 +430,8 @@ def _run_sequential(ordered: list[str], min_score: int, workers: int = 1,
 
 
 def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
-                   validation_mode: str = "normal") -> dict:
+                   validation_mode: str = "normal",
+                   user_id: int | None = None) -> dict:
     """Execute stages concurrently with DB as conveyor belt."""
     tracker = _StageTracker()
     stop_event = threading.Event()
@@ -428,7 +453,7 @@ def _run_streaming(ordered: list[str], min_score: int, workers: int = 1,
         start_times[name] = time.time()
         t = threading.Thread(
             target=_run_stage_streaming,
-            args=(name, tracker, stop_event, min_score, workers, validation_mode),
+            args=(name, tracker, stop_event, min_score, workers, validation_mode, user_id),
             name=f"stage-{name}",
             daemon=True,
         )
@@ -476,6 +501,7 @@ def run_pipeline(
     stream: bool = False,
     workers: int = 1,
     validation_mode: str = "normal",
+    user_id: int | None = None,
 ) -> dict:
     """Run pipeline stages.
 
@@ -526,10 +552,10 @@ def run_pipeline(
     # Execute
     if stream:
         result = _run_streaming(ordered, min_score, workers=workers,
-                                validation_mode=validation_mode)
+                                validation_mode=validation_mode, user_id=user_id)
     else:
         result = _run_sequential(ordered, min_score, workers=workers,
-                                 validation_mode=validation_mode)
+                                 validation_mode=validation_mode, user_id=user_id)
 
     # Summary table
     console.print(f"\n{'=' * 70}")

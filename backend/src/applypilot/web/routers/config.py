@@ -23,17 +23,28 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # ---------------------------------------------------------------------------
 
 @router.get("/api/profile")
-def get_profile() -> JSONResponse:
+def get_profile(user: dict = Depends(get_current_user)) -> JSONResponse:
+    from applypilot.database import get_connection
+    conn = get_connection()
+    row = conn.execute("SELECT profile_json FROM users WHERE id = ?", (user["id"],)).fetchone()
+    if row and row[0]:
+        return JSONResponse(json.loads(row[0]))
+    # Fall back to filesystem profile for existing single-user installs
     if not PROFILE_PATH.exists():
         raise HTTPException(status_code=404, detail="profile.json not found. Create it via the Profile page.")
     return JSONResponse(json.loads(PROFILE_PATH.read_text(encoding="utf-8")))
 
 
 @router.put("/api/profile")
-async def update_profile(request: Request) -> JSONResponse:
+async def update_profile(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     data = await request.json()
-    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROFILE_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    from applypilot.database import get_connection
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET profile_json = ? WHERE id = ?",
+        (json.dumps(data, ensure_ascii=False), user["id"]),
+    )
+    conn.commit()
     return JSONResponse({"ok": True})
 
 
@@ -42,10 +53,16 @@ async def update_profile(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/config/searches")
-def get_searches() -> JSONResponse:
-    if not SEARCH_CONFIG_PATH.exists():
+def get_searches(user: dict = Depends(get_current_user)) -> JSONResponse:
+    from applypilot.database import get_connection
+    conn = get_connection()
+    row = conn.execute("SELECT searches_json FROM users WHERE id = ?", (user["id"],)).fetchone()
+    if row and row[0]:
+        data = json.loads(row[0])
+    elif SEARCH_CONFIG_PATH.exists():
+        data = yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    else:
         raise HTTPException(status_code=404, detail="searches.yaml not found.")
-    data = yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8")) or {}
     if "description_reject_patterns" not in data:
         from applypilot.discovery.filter import DEFAULT_REJECT_PATTERNS
         data["description_reject_patterns"] = DEFAULT_REJECT_PATTERNS
@@ -54,24 +71,14 @@ def get_searches() -> JSONResponse:
 
 @router.put("/api/config/searches")
 async def update_searches(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
-    import json as _json
     data = await request.json()
-    SEARCH_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SEARCH_CONFIG_PATH.write_text(
-        yaml.dump(data, allow_unicode=True, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
+    from applypilot.database import get_connection
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET searches_json = ? WHERE id = ?",
+        (json.dumps(data), user["id"]),
     )
-    # Persist per-user copy so the background scheduler can discover for this user
-    try:
-        from applypilot.database import get_connection
-        conn = get_connection()
-        conn.execute(
-            "UPDATE users SET searches_json = ? WHERE id = ?",
-            (_json.dumps(data), int(user["sub"])),
-        )
-        conn.commit()
-    except Exception:
-        pass  # Non-fatal — shared yaml is the source of truth
+    conn.commit()
     return JSONResponse({"ok": True})
 
 
@@ -160,7 +167,13 @@ async def update_env_config(request: Request) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/config/resume")
-def get_resume_text() -> JSONResponse:
+def get_resume_text(user: dict = Depends(get_current_user)) -> JSONResponse:
+    from applypilot.database import get_connection
+    conn = get_connection()
+    row = conn.execute("SELECT resume_text FROM users WHERE id = ?", (user["id"],)).fetchone()
+    if row and row[0]:
+        return JSONResponse({"text": row[0], "exists": True})
+    # Fall back to filesystem for existing single-user installs
     from applypilot.config import RESUME_PATH
     if not RESUME_PATH.exists():
         return JSONResponse({"text": "", "exists": False})
@@ -168,16 +181,20 @@ def get_resume_text() -> JSONResponse:
 
 
 @router.put("/api/config/resume")
-async def update_resume_text(request: Request) -> JSONResponse:
-    from applypilot.config import RESUME_PATH
+async def update_resume_text(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     body = await request.json()
-    RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RESUME_PATH.write_text(body.get("text", ""), encoding="utf-8")
+    from applypilot.database import get_connection
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET resume_text = ? WHERE id = ?",
+        (body.get("text", ""), user["id"]),
+    )
+    conn.commit()
     return JSONResponse({"ok": True})
 
 
 @router.post("/api/config/resume/upload")
-async def upload_resume_pdf(request: Request) -> JSONResponse:
+async def upload_resume_pdf(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     form = await request.form()
     file: UploadFile = form.get("file")  # type: ignore
     if not file:
@@ -188,11 +205,11 @@ async def upload_resume_pdf(request: Request) -> JSONResponse:
     content = await file.read()
     dest.write_bytes(content)
 
-    task_id = _start_task(_extract_resume_text, dest)
+    task_id = _start_task(_extract_resume_text, dest, user["id"])
     return JSONResponse({"ok": True, "size": len(content), "task_id": task_id})
 
 
-def _extract_resume_text(pdf_path: Path) -> dict:
+def _extract_resume_text(pdf_path: Path, user_id: int | None = None) -> dict:
     from applypilot.config import RESUME_PATH
     from pypdf import PdfReader
     try:
@@ -200,6 +217,11 @@ def _extract_resume_text(pdf_path: Path) -> dict:
         text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
         if text:
             RESUME_PATH.write_text(text, encoding="utf-8")
+            if user_id is not None:
+                from applypilot.database import get_connection
+                conn = get_connection()
+                conn.execute("UPDATE users SET resume_text = ? WHERE id = ?", (text, user_id))
+                conn.commit()
             return {"extracted": True, "chars": len(text)}
     except Exception:
         pass

@@ -11,8 +11,8 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, load_profile
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.config import COVER_LETTER_DIR, RESUME_PATH, get_resume_text, load_profile
+from applypilot.database import get_connection, get_jobs_by_stage, upsert_user_job
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
@@ -191,11 +191,15 @@ def generate_cover_letter(
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
-def run_cover_letters(min_score: int = 7, limit: int = 20,
-                      validation_mode: str = "normal") -> dict:
+def run_cover_letters(
+    user_id: int | None = None, min_score: int = 7, limit: int = 20,
+    validation_mode: str = "normal",
+) -> dict:
     """Generate cover letters for high-scoring jobs that have tailored resumes.
 
     Args:
+        user_id:         If provided, reads profile/resume from DB and writes
+                         to user_jobs. If None, falls back to filesystem.
         min_score:       Minimum fit_score threshold.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
@@ -203,20 +207,33 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
     Returns:
         {"generated": int, "errors": int, "elapsed": float}
     """
-    profile = load_profile()
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    profile = load_profile(user_id)
+    resume_text = get_resume_text(user_id)
     conn = get_connection()
 
-    # Fetch jobs that have tailored resumes but no cover letter yet
-    jobs = conn.execute(
-        "SELECT * FROM jobs "
-        "WHERE fit_score >= ? AND tailored_resume_path IS NOT NULL "
-        "AND full_description IS NOT NULL "
-        "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
-        "AND COALESCE(cover_attempts, 0) < ? "
-        "ORDER BY fit_score DESC LIMIT ?",
-        (min_score, MAX_ATTEMPTS, limit),
-    ).fetchall()
+    if user_id is not None:
+        rows = conn.execute(
+            "SELECT j.*, uj.fit_score, uj.tailored_resume_path, uj.cover_letter_path, uj.cover_attempts "
+            "FROM jobs j "
+            "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+            "WHERE uj.fit_score >= ? AND uj.tailored_resume_path IS NOT NULL "
+            "AND j.full_description IS NOT NULL "
+            "AND (uj.cover_letter_path IS NULL OR uj.cover_letter_path = '') "
+            "AND COALESCE(uj.cover_attempts, 0) < ? "
+            "ORDER BY uj.fit_score DESC LIMIT ?",
+            (user_id, min_score, MAX_ATTEMPTS, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM jobs "
+            "WHERE fit_score >= ? AND tailored_resume_path IS NOT NULL "
+            "AND full_description IS NOT NULL "
+            "AND (cover_letter_path IS NULL OR cover_letter_path = '') "
+            "AND COALESCE(cover_attempts, 0) < ? "
+            "ORDER BY fit_score DESC LIMIT ?",
+            (min_score, MAX_ATTEMPTS, limit),
+        ).fetchall()
+    jobs = rows
 
     if not jobs:
         log.info("No jobs needing cover letters (score >= %d).", min_score)
@@ -227,7 +244,12 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
 
-    COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
+    if user_id is not None:
+        from applypilot.config import APP_DIR
+        out_dir = APP_DIR / "users" / str(user_id) / "cover_letters"
+    else:
+        out_dir = COVER_LETTER_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     log.info(
         "Generating cover letters for %d jobs (score >= %d)...",
         len(jobs), min_score,
@@ -245,7 +267,7 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
 
             prefix = _make_prefix(job)
 
-            cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
+            cl_path = out_dir / f"{prefix}_CL.txt"
             cl_path.write_text(letter, encoding="utf-8")
 
             # Generate PDF (best-effort)
@@ -280,23 +302,40 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
             results.append(result)
             log.error("%d/%d [ERROR] %s -- %s", completed, len(jobs), job["title"][:40], e)
 
-    # Persist to DB: increment attempt counter for ALL, save path only for successes
+    # Persist to DB
     now = datetime.now(timezone.utc).isoformat()
     saved = 0
     for r in results:
-        if r.get("path"):
-            conn.execute(
-                "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
-                "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
-            )
-            saved += 1
+        if user_id is not None:
+            cur_attempts = (conn.execute(
+                "SELECT COALESCE(cover_attempts, 0) FROM user_jobs WHERE user_id = ? AND job_url = ?",
+                (user_id, r["url"]),
+            ).fetchone() or [0])[0]
+            if r.get("path"):
+                upsert_user_job(
+                    conn, user_id, r["url"],
+                    cover_letter_path=r["path"],
+                    cover_letter_at=now,
+                    cover_attempts=cur_attempts + 1,
+                )
+                saved += 1
+            else:
+                upsert_user_job(conn, user_id, r["url"], cover_attempts=cur_attempts + 1)
         else:
-            conn.execute(
-                "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-                (r["url"],),
-            )
-    conn.commit()
+            if r.get("path"):
+                conn.execute(
+                    "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+                    "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+                    (r["path"], now, r["url"]),
+                )
+                saved += 1
+            else:
+                conn.execute(
+                    "UPDATE jobs SET cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+                    (r["url"],),
+                )
+    if user_id is None:
+        conn.commit()
 
     elapsed = time.time() - t0
     log.info("Cover letters done in %.1fs: %d generated, %d errors", elapsed, saved, error_count)
@@ -310,18 +349,22 @@ def run_cover_letters(min_score: int = 7, limit: int = 20,
 
 # ── Single-Job Entry Point ────────────────────────────────────────────────
 
-def cover_letter_by_url(job_url: str, validation_mode: str = "normal") -> dict:
+def cover_letter_by_url(
+    job_url: str, user_id: int | None = None, validation_mode: str = "normal"
+) -> dict:
     """Generate a cover letter for a single job identified by URL.
 
     Args:
         job_url:         The job's primary URL (DB primary key).
+        user_id:         If provided, reads profile/resume from DB and writes
+                         to user_jobs. Files stored under users/{user_id}/.
         validation_mode: "strict", "normal", or "lenient".
 
     Returns:
         {"status": str, "path": str|None, "pdf_path": str|None, "error": str|None}
     """
-    profile = load_profile()
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    profile = load_profile(user_id)
+    resume_text = get_resume_text(user_id)
     conn = get_connection()
 
     row = conn.execute(
@@ -339,11 +382,19 @@ def cover_letter_by_url(job_url: str, validation_mode: str = "normal") -> dict:
 
     job = dict(row)
 
-    # Use tailored resume text if available, otherwise fall back to base resume
+    # Use tailored resume if available
     resume_src = resume_text
-    if job.get("tailored_resume_path") and Path(job["tailored_resume_path"]).exists():
+    if user_id is not None:
+        uj_row = conn.execute(
+            "SELECT tailored_resume_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+            (user_id, job_url),
+        ).fetchone()
+        tailored_path = uj_row[0] if uj_row else None
+    else:
+        tailored_path = job.get("tailored_resume_path")
+    if tailored_path and Path(tailored_path).exists():
         try:
-            resume_src = Path(job["tailored_resume_path"]).read_text(encoding="utf-8")
+            resume_src = Path(tailored_path).read_text(encoding="utf-8")
         except Exception:
             pass
 
@@ -353,8 +404,13 @@ def cover_letter_by_url(job_url: str, validation_mode: str = "normal") -> dict:
 
     prefix = _make_prefix(job)
 
-    COVER_LETTER_DIR.mkdir(parents=True, exist_ok=True)
-    cl_path = COVER_LETTER_DIR / f"{prefix}_CL.txt"
+    if user_id is not None:
+        from applypilot.config import APP_DIR
+        out_dir = APP_DIR / "users" / str(user_id) / "cover_letters"
+    else:
+        out_dir = COVER_LETTER_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cl_path = out_dir / f"{prefix}_CL.txt"
     cl_path.write_text(letter, encoding="utf-8")
 
     pdf_path = None
@@ -365,13 +421,24 @@ def cover_letter_by_url(job_url: str, validation_mode: str = "normal") -> dict:
         log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 
     now = datetime.now(timezone.utc).isoformat()
-    # Always save the path — best attempt even if validation didn't fully pass.
-    conn.execute(
-        "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
-        "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-        (str(cl_path), now, job_url),
-    )
-    conn.commit()
+    if user_id is not None:
+        cur_attempts = (conn.execute(
+            "SELECT COALESCE(cover_attempts, 0) FROM user_jobs WHERE user_id = ? AND job_url = ?",
+            (user_id, job_url),
+        ).fetchone() or [0])[0]
+        upsert_user_job(
+            conn, user_id, job_url,
+            cover_letter_path=str(cl_path),
+            cover_letter_at=now,
+            cover_attempts=cur_attempts + 1,
+        )
+    else:
+        conn.execute(
+            "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+            "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
+            (str(cl_path), now, job_url),
+        )
+        conn.commit()
 
     return {
         "status": "ok",

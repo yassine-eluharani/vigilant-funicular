@@ -9,7 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from applypilot.database import get_connection
+from applypilot.database import get_connection, upsert_user_job
 from applypilot.web.auth import (
     get_current_user,
     get_user_record,
@@ -26,20 +26,26 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # ---------------------------------------------------------------------------
 
 @router.get("/api/stats")
-def stats() -> JSONResponse:
+def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
     from applypilot.database import get_stats
-    s = get_stats()
+    user_id = user["id"]
+    s = get_stats(user_id=user_id)
     conn = get_connection()
     pending = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL "
-        "AND (apply_status IS NULL OR apply_status NOT IN ('applied','dismissed'))"
+        "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? "
+        "AND tailored_resume_path IS NOT NULL "
+        "AND (apply_status IS NULL OR apply_status NOT IN ('applied','dismissed'))",
+        (user_id,),
     ).fetchone()[0]
     dismissed = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'dismissed'"
+        "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND apply_status = 'dismissed'",
+        (user_id,),
     ).fetchone()[0]
     sites = conn.execute(
-        "SELECT DISTINCT site FROM jobs WHERE tailored_resume_path IS NOT NULL "
-        "AND site IS NOT NULL ORDER BY site"
+        "SELECT DISTINCT j.site FROM jobs j "
+        "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+        "WHERE uj.tailored_resume_path IS NOT NULL AND j.site IS NOT NULL ORDER BY j.site",
+        (user_id,),
     ).fetchall()
     return JSONResponse({
         "tailored": s["tailored"],
@@ -91,70 +97,78 @@ def list_jobs(
     limit: int = Query(50, ge=1, le=200),
 ) -> JSONResponse:
     conn = get_connection()
+    user_id = user["id"]
+
+    # Base: always join jobs with user_jobs for this user
+    base = (
+        "FROM jobs j "
+        "LEFT JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+    )
+    params: list = [user_id]
 
     if status == "untailored":
         clauses = [
-            "tailored_resume_path IS NULL",
-            "fit_score >= ?",
-            "fit_score <= ?",
-            "full_description IS NOT NULL",
-            "(apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))",
+            "uj.tailored_resume_path IS NULL",
+            "uj.fit_score >= ?",
+            "uj.fit_score <= ?",
+            "j.full_description IS NOT NULL",
+            "(uj.apply_status IS NULL OR uj.apply_status NOT IN ('dismissed','location_filtered'))",
         ]
     elif status == "ready":
         clauses = [
-            "tailored_resume_path IS NOT NULL",
-            "fit_score >= ?",
-            "fit_score <= ?",
-            "(apply_status IS NULL OR apply_status NOT IN "
+            "uj.tailored_resume_path IS NOT NULL",
+            "uj.fit_score >= ?",
+            "uj.fit_score <= ?",
+            "(uj.apply_status IS NULL OR uj.apply_status NOT IN "
             "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))",
         ]
     elif status == "favorites":
         clauses = [
-            "COALESCE(favorited, 0) = 1",
-            "fit_score >= ?",
-            "fit_score <= ?",
+            "COALESCE(uj.favorited, 0) = 1",
+            "uj.fit_score >= ?",
+            "uj.fit_score <= ?",
         ]
     else:
         clauses = [
-            "tailored_resume_path IS NOT NULL",
-            "fit_score >= ?",
-            "fit_score <= ?",
+            "uj.tailored_resume_path IS NOT NULL",
+            "uj.fit_score >= ?",
+            "uj.fit_score <= ?",
         ]
 
-    params: list = [min_score, max_score]
+    params.extend([min_score, max_score])
 
     if status == "pending":
-        clauses.append("(apply_status IS NULL OR apply_status NOT IN ('applied','dismissed'))")
+        clauses.append("(uj.apply_status IS NULL OR uj.apply_status NOT IN ('applied','dismissed'))")
     elif status == "applied":
-        clauses.append("apply_status IN ('applied','interview','offer','rejected')")
+        clauses.append("uj.apply_status IN ('applied','interview','offer','rejected')")
     elif status == "dismissed":
-        clauses.append("apply_status = 'dismissed'")
+        clauses.append("uj.apply_status = 'dismissed'")
 
     if site:
-        clauses.append("site = ?")
+        clauses.append("j.site = ?")
         params.append(site)
 
     if search:
-        clauses.append("(title LIKE ? OR score_reasoning LIKE ? OR location LIKE ?)")
+        clauses.append("(j.title LIKE ? OR uj.score_reasoning LIKE ? OR j.location LIKE ?)")
         term = f"%{search}%"
         params.extend([term, term, term])
 
     where = " AND ".join(clauses)
 
-    total = conn.execute(f"SELECT COUNT(*) FROM jobs WHERE {where}", params).fetchone()[0]
+    total = conn.execute(f"SELECT COUNT(*) {base} WHERE {where}", params).fetchone()[0]
     rows = conn.execute(
-        f"SELECT url, title, company, site, location, salary, fit_score, score_reasoning, "
-        f"tailored_resume_path, cover_letter_path, apply_status, applied_at, "
-        f"application_url, discovered_at, tailored_at, COALESCE(favorited, 0) as favorited "
-        f"FROM jobs WHERE {where} "
-        f"ORDER BY fit_score DESC, discovered_at DESC "
+        f"SELECT j.url, j.title, j.company, j.site, j.location, j.salary, "
+        f"uj.fit_score, uj.score_reasoning, "
+        f"uj.tailored_resume_path, uj.cover_letter_path, uj.apply_status, uj.applied_at, "
+        f"j.application_url, j.discovered_at, uj.tailored_at, COALESCE(uj.favorited, 0) as favorited "
+        f"{base} WHERE {where} "
+        f"ORDER BY uj.fit_score DESC, j.discovered_at DESC "
         f"LIMIT ? OFFSET ?",
         params + [limit, offset],
     ).fetchall()
 
-    # Apply free-tier blur: lock jobs scoring >= threshold
-    user_record = get_user_record(int(user["sub"]))
-    is_free = user_record["tier"] == "free"
+    # Apply free-tier blur
+    is_free = user["tier"] == "free"
 
     jobs_out = []
     for r in rows:
@@ -178,10 +192,22 @@ def list_jobs(
 # ---------------------------------------------------------------------------
 
 @router.get("/api/jobs/{encoded_url}")
-def get_job(encoded_url: str) -> JSONResponse:
+def get_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONResponse:
     job_url = decode_url(encoded_url)
     conn = get_connection()
-    row = conn.execute("SELECT * FROM jobs WHERE url = ?", (job_url,)).fetchone()
+    user_id = user["id"]
+
+    row = conn.execute(
+        "SELECT j.*, uj.fit_score, uj.score_reasoning, uj.scored_at, "
+        "uj.tailored_resume_path, uj.tailored_at, uj.tailor_attempts, "
+        "uj.cover_letter_path, uj.cover_letter_at, uj.cover_attempts, "
+        "uj.apply_status, uj.applied_at, uj.apply_error, "
+        "COALESCE(uj.favorited, 0) as favorited "
+        "FROM jobs j "
+        "LEFT JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+        "WHERE j.url = ?",
+        (user_id, job_url),
+    ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
     job = row_to_job(row)
@@ -200,10 +226,13 @@ def get_job(encoded_url: str) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @router.get("/api/resume/{encoded_url}")
-def serve_resume(encoded_url: str) -> FileResponse:
+def serve_resume(encoded_url: str, user: dict = Depends(get_current_user)) -> FileResponse:
     job_url = decode_url(encoded_url)
     conn = get_connection()
-    row = conn.execute("SELECT tailored_resume_path FROM jobs WHERE url = ?", (job_url,)).fetchone()
+    row = conn.execute(
+        "SELECT tailored_resume_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        (user["id"], job_url),
+    ).fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No tailored resume for this job")
     txt_path = Path(row[0])
@@ -216,10 +245,13 @@ def serve_resume(encoded_url: str) -> FileResponse:
 
 
 @router.get("/api/cover-letter/{encoded_url}")
-def serve_cover_letter(encoded_url: str) -> FileResponse:
+def serve_cover_letter(encoded_url: str, user: dict = Depends(get_current_user)) -> FileResponse:
     job_url = decode_url(encoded_url)
     conn = get_connection()
-    row = conn.execute("SELECT cover_letter_path FROM jobs WHERE url = ?", (job_url,)).fetchone()
+    row = conn.execute(
+        "SELECT cover_letter_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        (user["id"], job_url),
+    ).fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No cover letter for this job")
     txt_path = Path(row[0])
@@ -236,10 +268,13 @@ def serve_cover_letter(encoded_url: str) -> FileResponse:
 # ---------------------------------------------------------------------------
 
 @router.put("/api/jobs/{encoded_url}/resume")
-async def save_resume(encoded_url: str, request: Request) -> JSONResponse:
+async def save_resume(encoded_url: str, request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     job_url = decode_url(encoded_url)
     conn = get_connection()
-    row = conn.execute("SELECT tailored_resume_path FROM jobs WHERE url = ?", (job_url,)).fetchone()
+    row = conn.execute(
+        "SELECT tailored_resume_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        (user["id"], job_url),
+    ).fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No tailored resume path for this job")
     body = await request.json()
@@ -264,23 +299,23 @@ def tailor_job(
     user: dict = Depends(get_current_user),
     validation_mode: str = Query("normal"),
 ) -> JSONResponse:
-    check_and_increment_usage(int(user["sub"]), "tailor")
+    check_and_increment_usage(user["id"], "tailor")
     job_url = decode_url(encoded_url)
     from applypilot.scoring.tailor import tailor_job_by_url
-    task_id = _start_task(tailor_job_by_url, job_url, validation_mode)
+    task_id = _start_task(tailor_job_by_url, job_url, user["id"], validation_mode)
     return JSONResponse({"task_id": task_id})
 
 
 @router.post("/api/jobs/{encoded_url}/favorite")
-def toggle_favorite(encoded_url: str) -> JSONResponse:
+def toggle_favorite(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONResponse:
     job_url = decode_url(encoded_url)
     conn = get_connection()
-    row = conn.execute("SELECT favorited FROM jobs WHERE url = ?", (job_url,)).fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Job not found")
-    new_val = 0 if row["favorited"] else 1
-    conn.execute("UPDATE jobs SET favorited = ? WHERE url = ?", (new_val, job_url))
-    conn.commit()
+    row = conn.execute(
+        "SELECT favorited FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        (user["id"], job_url),
+    ).fetchone()
+    new_val = 0 if (row and row["favorited"]) else 1
+    upsert_user_job(conn, user["id"], job_url, favorited=new_val)
     return JSONResponse({"favorited": bool(new_val)})
 
 
@@ -290,10 +325,10 @@ def cover_job(
     user: dict = Depends(get_current_user),
     validation_mode: str = Query("normal"),
 ) -> JSONResponse:
-    check_and_increment_usage(int(user["sub"]), "cover")
+    check_and_increment_usage(user["id"], "cover")
     job_url = decode_url(encoded_url)
     from applypilot.scoring.cover_letter import cover_letter_by_url
-    task_id = _start_task(cover_letter_by_url, job_url, validation_mode)
+    task_id = _start_task(cover_letter_by_url, job_url, user["id"], validation_mode)
     return JSONResponse({"task_id": task_id})
 
 
@@ -301,48 +336,45 @@ def cover_job(
 # Status mutations
 # ---------------------------------------------------------------------------
 
-def _mark_job(job_url: str, status: str) -> None:
-    """Update apply_status for a job in the database."""
+def _mark_job(user_id: int, job_url: str, status: str) -> None:
+    """Update apply_status for a job in user_jobs."""
     conn = get_connection()
     if status == "restore":
-        conn.execute(
-            "UPDATE jobs SET apply_status = NULL, applied_at = NULL WHERE url = ?",
-            (job_url,),
-        )
+        upsert_user_job(conn, user_id, job_url, apply_status=None, applied_at=None)
     else:
-        conn.execute(
-            "UPDATE jobs SET apply_status = ?, applied_at = ? WHERE url = ?",
-            (status, datetime.datetime.utcnow().isoformat(), job_url),
+        upsert_user_job(
+            conn, user_id, job_url,
+            apply_status=status,
+            applied_at=datetime.datetime.utcnow().isoformat(),
         )
-    conn.commit()
 
 
 @router.post("/api/jobs/{encoded_url}/mark-applied")
-def mark_applied(encoded_url: str) -> JSONResponse:
-    _mark_job(decode_url(encoded_url), "applied")
+def mark_applied(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONResponse:
+    _mark_job(user["id"], decode_url(encoded_url), "applied")
     return JSONResponse({"ok": True, "status": "applied"})
 
 
 @router.post("/api/jobs/{encoded_url}/dismiss")
-def dismiss_job(encoded_url: str) -> JSONResponse:
-    _mark_job(decode_url(encoded_url), "dismissed")
+def dismiss_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONResponse:
+    _mark_job(user["id"], decode_url(encoded_url), "dismissed")
     return JSONResponse({"ok": True, "status": "dismissed"})
 
 
 @router.post("/api/jobs/{encoded_url}/restore")
-def restore_job(encoded_url: str) -> JSONResponse:
-    _mark_job(decode_url(encoded_url), "restore")
+def restore_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONResponse:
+    _mark_job(user["id"], decode_url(encoded_url), "restore")
     return JSONResponse({"ok": True, "status": "restored"})
 
 
 @router.post("/api/jobs/{encoded_url}/mark-status")
-async def mark_status(encoded_url: str, request: Request) -> JSONResponse:
+async def mark_status(encoded_url: str, request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     body = await request.json()
     new_status = body.get("status", "")
     allowed = {"applied", "interview", "offer", "rejected"}
     if new_status not in allowed:
         raise HTTPException(status_code=400, detail=f"status must be one of {allowed}")
-    _mark_job(decode_url(encoded_url), new_status)
+    _mark_job(user["id"], decode_url(encoded_url), new_status)
     return JSONResponse({"ok": True, "status": new_status})
 
 
@@ -354,5 +386,6 @@ async def mark_status(encoded_url: str, request: Request) -> JSONResponse:
 def purge_database() -> JSONResponse:
     conn = get_connection()
     cursor = conn.execute("DELETE FROM jobs")
+    conn.execute("DELETE FROM user_jobs")
     conn.commit()
     return JSONResponse({"deleted": cursor.rowcount})

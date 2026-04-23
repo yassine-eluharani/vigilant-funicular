@@ -12,7 +12,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 def _do_run_pipeline(stages: list[str], min_score: int, workers: int,
-                     validation: str, stream: bool) -> dict:
+                     validation: str, stream: bool, user_id: int | None = None) -> dict:
     from applypilot.pipeline import run_pipeline
     return run_pipeline(
         stages=stages,
@@ -20,18 +20,19 @@ def _do_run_pipeline(stages: list[str], min_score: int, workers: int,
         workers=workers,
         validation_mode=validation,
         stream=stream,
+        user_id=user_id,
     )
 
 
 @router.post("/api/pipeline/run")
-async def pipeline_run(request: Request) -> JSONResponse:
+async def pipeline_run(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     body = await request.json()
     stages = body.get("stages", ["discover", "enrich", "score"])
     min_score = int(body.get("min_score", 7))
     workers = int(body.get("workers", 1))
     validation = body.get("validation", "normal")
     stream = bool(body.get("stream", False))
-    task_id = _start_task(_do_run_pipeline, stages, min_score, workers, validation, stream)
+    task_id = _start_task(_do_run_pipeline, stages, min_score, workers, validation, stream, user["id"])
     return JSONResponse({"task_id": task_id})
 
 

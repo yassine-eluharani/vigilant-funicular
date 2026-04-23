@@ -184,27 +184,7 @@ def close_connection(db_path: Path | str | None = None) -> None:
 
 
 def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Create the full jobs table with all columns from every pipeline stage.
-
-    This is idempotent -- safe to call on every startup. Uses CREATE TABLE IF NOT EXISTS
-    so it won't destroy existing data.
-
-    Schema columns by stage:
-      - Discovery:  url, title, salary, description, location, site, strategy, discovered_at
-      - Enrichment: full_description, application_url, detail_scraped_at, detail_error
-      - Scoring:    fit_score, score_reasoning, scored_at
-      - Tailoring:  tailored_resume_path, tailored_at, tailor_attempts
-      - Cover:      cover_letter_path, cover_letter_at, cover_attempts
-      - Apply:      applied_at, apply_status, apply_error, apply_attempts,
-                   agent_id, last_attempted_at, apply_duration_ms, apply_task_id,
-                   verification_confidence
-
-    Args:
-        db_path: Override the default DB_PATH.
-
-    Returns:
-        sqlite3.Connection with the schema initialized.
-    """
+    """Create all tables with full schema. Idempotent — safe to call on every startup."""
     path = db_path or DB_PATH
 
     # Ensure parent directory exists
@@ -223,7 +203,10 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             tier          TEXT DEFAULT 'free',
             tailors_used  INTEGER DEFAULT 0,
             covers_used   INTEGER DEFAULT 0,
-            usage_reset_at TEXT
+            usage_reset_at TEXT,
+            searches_json TEXT,
+            profile_json  TEXT,
+            resume_text   TEXT
         )
     """)
 
@@ -242,7 +225,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
-            -- Discovery stage (smart_extract / job_search)
+            -- Discovery stage
             url                   TEXT PRIMARY KEY,
             title                 TEXT,
             company               TEXT,
@@ -253,34 +236,29 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             strategy              TEXT,
             discovered_at         TEXT,
 
-            -- Enrichment stage (detail_scraper)
+            -- Enrichment stage
             full_description      TEXT,
             application_url       TEXT,
             detail_scraped_at     TEXT,
             detail_error          TEXT,
 
-            -- Filter stage (location filter)
+            -- Filter stage (global — location restriction is a fact about the job)
             filtered_at           TEXT,
 
-            -- Scoring stage (job_scorer)
+            -- Phase 3: structured metadata extracted once per job
+            job_metadata_json     TEXT,
+
+            -- Legacy per-user columns (kept for backward compat, new writes go to user_jobs)
             fit_score             INTEGER,
             score_reasoning       TEXT,
             scored_at             TEXT,
-
-            -- Tailoring stage (resume tailor)
             tailored_resume_path  TEXT,
             tailored_at           TEXT,
             tailor_attempts       INTEGER DEFAULT 0,
-
-            -- Cover letter stage
             cover_letter_path     TEXT,
             cover_letter_at       TEXT,
             cover_attempts        INTEGER DEFAULT 0,
-
-            -- Favorites
             favorited             INTEGER DEFAULT 0,
-
-            -- Application stage
             applied_at            TEXT,
             apply_status          TEXT,
             apply_error           TEXT,
@@ -292,6 +270,31 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             verification_confidence TEXT
         )
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_jobs (
+            user_id               INTEGER NOT NULL,
+            job_url               TEXT NOT NULL,
+            fit_score             INTEGER,
+            score_reasoning       TEXT,
+            scored_at             TEXT,
+            tailored_resume_path  TEXT,
+            tailored_at           TEXT,
+            tailor_attempts       INTEGER DEFAULT 0,
+            cover_letter_path     TEXT,
+            cover_letter_at       TEXT,
+            cover_attempts        INTEGER DEFAULT 0,
+            apply_status          TEXT,
+            applied_at            TEXT,
+            apply_error           TEXT,
+            favorited             INTEGER DEFAULT 0,
+            dismissed_at          TEXT,
+            notes                 TEXT,
+            PRIMARY KEY (user_id, job_url),
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (job_url) REFERENCES jobs(url)
+        )
+    """)
     conn.commit()
 
     # Run migrations for any columns added after initial schema
@@ -301,9 +304,7 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
     return conn
 
 
-# Complete column registry: column_name -> SQL type with optional default.
-# This is the single source of truth. Adding a column here is all that's needed
-# for it to appear in both new databases and migrated ones.
+# Complete column registry for the jobs table.
 _ALL_COLUMNS: dict[str, str] = {
     # Discovery
     "url": "TEXT PRIMARY KEY",
@@ -322,21 +323,19 @@ _ALL_COLUMNS: dict[str, str] = {
     "detail_error": "TEXT",
     # Filter
     "filtered_at": "TEXT",
-    # Scoring
+    # Phase 3 metadata
+    "job_metadata_json": "TEXT",
+    # Legacy per-user (kept for migration)
     "fit_score": "INTEGER",
     "score_reasoning": "TEXT",
     "scored_at": "TEXT",
-    # Tailoring
     "tailored_resume_path": "TEXT",
     "tailored_at": "TEXT",
     "tailor_attempts": "INTEGER DEFAULT 0",
-    # Cover letter
     "cover_letter_path": "TEXT",
     "cover_letter_at": "TEXT",
     "cover_attempts": "INTEGER DEFAULT 0",
-    # Favorites
     "favorited": "INTEGER DEFAULT 0",
-    # Application
     "applied_at": "TEXT",
     "apply_status": "TEXT",
     "apply_error": "TEXT",
@@ -350,20 +349,7 @@ _ALL_COLUMNS: dict[str, str] = {
 
 
 def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
-    """Add any missing columns to the jobs table (forward migration).
-
-    Reads the current table schema via PRAGMA table_info and compares against
-    the full column registry. Any missing columns are added with ALTER TABLE.
-
-    This makes it safe to upgrade the database from any previous version --
-    columns are only added, never removed or renamed.
-
-    Args:
-        conn: Database connection. Uses get_connection() if None.
-
-    Returns:
-        List of column names that were added (empty if schema was already current).
-    """
+    """Add any missing columns to the jobs table (forward migration)."""
     if conn is None:
         conn = get_connection()
 
@@ -372,8 +358,6 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
 
     for col, dtype in _ALL_COLUMNS.items():
         if col not in existing:
-            # PRIMARY KEY columns can't be added via ALTER TABLE, but url
-            # is always created with the table itself so this is safe
             if "PRIMARY KEY" in dtype:
                 continue
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {dtype}")
@@ -386,17 +370,37 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
 
 
 _USER_EXTRA_COLUMNS: dict[str, str] = {
-    "clerk_id": "TEXT",  # UNIQUE enforced via index (ALTER TABLE can't add UNIQUE columns)
+    "clerk_id": "TEXT",  # UNIQUE enforced via index
     "tier": "TEXT DEFAULT 'free'",
     "tailors_used": "INTEGER DEFAULT 0",
     "covers_used": "INTEGER DEFAULT 0",
     "usage_reset_at": "TEXT",
-    "searches_json": "TEXT",  # per-user search config (JSON), used by background scheduler
+    "searches_json": "TEXT",
+    "profile_json": "TEXT",
+    "resume_text": "TEXT",
+}
+
+_USER_JOBS_COLUMNS: dict[str, str] = {
+    "fit_score": "INTEGER",
+    "score_reasoning": "TEXT",
+    "scored_at": "TEXT",
+    "tailored_resume_path": "TEXT",
+    "tailored_at": "TEXT",
+    "tailor_attempts": "INTEGER DEFAULT 0",
+    "cover_letter_path": "TEXT",
+    "cover_letter_at": "TEXT",
+    "cover_attempts": "INTEGER DEFAULT 0",
+    "apply_status": "TEXT",
+    "applied_at": "TEXT",
+    "apply_error": "TEXT",
+    "favorited": "INTEGER DEFAULT 0",
+    "dismissed_at": "TEXT",
+    "notes": "TEXT",
 }
 
 
 def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
-    """Add any missing tier/usage columns to the users table."""
+    """Add any missing columns to users and user_jobs tables."""
     if conn is None:
         conn = get_connection()
     existing = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
@@ -404,35 +408,118 @@ def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
         if col not in existing:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
     conn.commit()
-    # Unique index for clerk_id — created separately because ALTER TABLE ADD COLUMN
-    # doesn't support UNIQUE constraints in SQLite/Turso.
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id)"
+    )
+
+    # Ensure user_jobs table exists and has all columns
+    try:
+        uj_existing = {row[1] for row in conn.execute("PRAGMA table_info(user_jobs)").fetchall()}
+        for col, dtype in _USER_JOBS_COLUMNS.items():
+            if col not in uj_existing:
+                conn.execute(f"ALTER TABLE user_jobs ADD COLUMN {col} {dtype}")
+        conn.commit()
+    except Exception:
+        pass  # Table might not exist yet — init_db() creates it
+
+
+# ---------------------------------------------------------------------------
+# user_jobs helpers
+# ---------------------------------------------------------------------------
+
+def get_user_job(conn: sqlite3.Connection, user_id: int, job_url: str) -> dict | None:
+    """Fetch a single user_jobs row as a dict, or None if not found."""
+    row = conn.execute(
+        "SELECT * FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        (user_id, job_url),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_user_job(conn: sqlite3.Connection, user_id: int, job_url: str, **fields) -> None:
+    """Insert or update a user_jobs row with the given fields."""
+    if not fields:
+        # Ensure the row exists with defaults
+        conn.execute(
+            "INSERT OR IGNORE INTO user_jobs (user_id, job_url) VALUES (?, ?)",
+            (user_id, job_url),
+        )
+        conn.commit()
+        return
+
+    set_clause = ", ".join(f"{k} = ?" for k in fields)
+    values = list(fields.values())
+
+    conn.execute(
+        "INSERT OR IGNORE INTO user_jobs (user_id, job_url) VALUES (?, ?)",
+        (user_id, job_url),
+    )
+    conn.execute(
+        f"UPDATE user_jobs SET {set_clause} WHERE user_id = ? AND job_url = ?",
+        values + [user_id, job_url],
     )
     conn.commit()
 
 
-def get_stats(conn: sqlite3.Connection | None = None) -> dict:
-    """Return job counts by pipeline stage.
+def migrate_to_user_jobs(conn: sqlite3.Connection | None = None, user_id: int = 1) -> int:
+    """One-time migration: copy per-user columns from jobs → user_jobs for a given user.
 
-    Provides a snapshot of how many jobs are at each stage, useful for
-    dashboard display and pipeline progress tracking.
+    Safe to run multiple times — uses INSERT OR IGNORE so existing rows are preserved.
+    Returns the number of rows migrated.
+    """
+    if conn is None:
+        conn = get_connection()
+
+    rows = conn.execute("""
+        SELECT url, fit_score, score_reasoning, scored_at,
+               tailored_resume_path, tailored_at, tailor_attempts,
+               cover_letter_path, cover_letter_at, cover_attempts,
+               apply_status, applied_at, apply_error,
+               COALESCE(favorited, 0) as favorited
+        FROM jobs
+        WHERE fit_score IS NOT NULL
+           OR tailored_resume_path IS NOT NULL
+           OR cover_letter_path IS NOT NULL
+           OR apply_status IS NOT NULL
+    """).fetchall()
+
+    migrated = 0
+    for row in rows:
+        conn.execute(
+            "INSERT OR IGNORE INTO user_jobs "
+            "(user_id, job_url, fit_score, score_reasoning, scored_at, "
+            " tailored_resume_path, tailored_at, tailor_attempts, "
+            " cover_letter_path, cover_letter_at, cover_attempts, "
+            " apply_status, applied_at, apply_error, favorited) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, row[0], row[1], row[2], row[3],
+             row[4], row[5], row[6], row[7], row[8], row[9],
+             row[10], row[11], row[12], row[13]),
+        )
+        migrated += 1
+    conn.commit()
+    return migrated
+
+
+# ---------------------------------------------------------------------------
+# Stats
+# ---------------------------------------------------------------------------
+
+def get_stats(conn: sqlite3.Connection | None = None, user_id: int | None = None) -> dict:
+    """Return job counts by pipeline stage.
 
     Args:
         conn: Database connection. Uses get_connection() if None.
-
-    Returns:
-        Dictionary with keys:
-            total, by_site, pending_detail, with_description,
-            scored, unscored, tailored, untailored_eligible,
-            with_cover_letter, applied, score_distribution
+        user_id: When provided, user-specific stats (scores, tailors, etc.)
+                 are scoped to this user via user_jobs. When None, falls back
+                 to the legacy jobs-table columns (backward compat).
     """
     if conn is None:
         conn = get_connection()
 
     stats: dict = {}
 
-    # Total jobs
+    # Total jobs (global — discovery)
     stats["total"] = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
 
     # By site breakdown
@@ -441,11 +528,10 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
     ).fetchall()
     stats["by_site"] = [(row[0], row[1]) for row in rows]
 
-    # Enrichment stage
+    # Enrichment stage (global)
     stats["pending_enrich"] = conn.execute(
         "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL"
     ).fetchone()[0]
-    # keep old key for backwards compat
     stats["pending_detail"] = stats["pending_enrich"]
 
     stats["with_description"] = conn.execute(
@@ -456,106 +542,176 @@ def get_stats(conn: sqlite3.Connection | None = None) -> dict:
         "SELECT COUNT(*) FROM jobs WHERE detail_error IS NOT NULL"
     ).fetchone()[0]
 
-    # Filter stage
-    stats["pending_filter"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL "
-        "AND filtered_at IS NULL "
-        "AND (apply_status IS NULL OR apply_status = 'failed')"
-    ).fetchone()[0]
+    # Filter stage (global)
+    if user_id is not None:
+        stats["pending_filter"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs j "
+            "WHERE j.full_description IS NOT NULL "
+            "AND j.filtered_at IS NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM user_jobs uj "
+            "  WHERE uj.job_url = j.url AND uj.user_id = ? "
+            "  AND uj.apply_status = 'location_filtered'"
+            ")",
+            (user_id,),
+        ).fetchone()[0]
+        stats["location_filtered"] = conn.execute(
+            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND apply_status = 'location_filtered'",
+            (user_id,),
+        ).fetchone()[0]
+    else:
+        stats["pending_filter"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE full_description IS NOT NULL "
+            "AND filtered_at IS NULL "
+            "AND (apply_status IS NULL OR apply_status = 'failed')"
+        ).fetchone()[0]
+        stats["location_filtered"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'location_filtered'"
+        ).fetchone()[0]
 
-    stats["location_filtered"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'location_filtered'"
-    ).fetchone()[0]
+    # User-scoped scoring/tailoring/cover/apply stats
+    if user_id is not None:
+        uj = "FROM user_jobs WHERE user_id = ?"
+        p = (user_id,)
 
-    # Scoring stage
-    stats["scored"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
-    ).fetchone()[0]
+        stats["scored"] = conn.execute(f"SELECT COUNT(*) {uj} AND fit_score IS NOT NULL", p).fetchone()[0]
 
-    stats["unscored"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE full_description IS NOT NULL "
-        "AND filtered_at IS NOT NULL "
-        "AND fit_score IS NULL "
-        "AND apply_status != 'location_filtered'"
-    ).fetchone()[0]
+        stats["unscored"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs j "
+            "WHERE j.full_description IS NOT NULL AND j.filtered_at IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL"
+            ") "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.apply_status = 'location_filtered'"
+            ")",
+            (user_id, user_id),
+        ).fetchone()[0]
 
-    # Score distribution
-    dist_rows = conn.execute(
-        "SELECT fit_score, COUNT(*) as cnt FROM jobs "
-        "WHERE fit_score IS NOT NULL "
-        "GROUP BY fit_score ORDER BY fit_score DESC"
-    ).fetchall()
-    stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
+        dist_rows = conn.execute(
+            f"SELECT fit_score, COUNT(*) as cnt {uj} AND fit_score IS NOT NULL "
+            "GROUP BY fit_score ORDER BY fit_score DESC", p
+        ).fetchall()
+        stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
 
-    # Tailoring stage
-    stats["tailored"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL"
-    ).fetchone()[0]
+        stats["tailored"] = conn.execute(f"SELECT COUNT(*) {uj} AND tailored_resume_path IS NOT NULL", p).fetchone()[0]
 
-    stats["untailored_eligible"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE fit_score >= 7 AND full_description IS NOT NULL "
-        "AND tailored_resume_path IS NULL "
-        "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))"
-    ).fetchone()[0]
+        stats["untailored_eligible"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs j "
+            "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+            "WHERE uj.fit_score >= 7 AND j.full_description IS NOT NULL "
+            "AND uj.tailored_resume_path IS NULL "
+            "AND COALESCE(uj.tailor_attempts, 0) < 5 "
+            "AND (uj.apply_status IS NULL OR uj.apply_status NOT IN ('dismissed','location_filtered'))",
+            p,
+        ).fetchone()[0]
 
-    stats["tailor_exhausted"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE COALESCE(tailor_attempts, 0) >= 5 "
-        "AND tailored_resume_path IS NULL"
-    ).fetchone()[0]
+        stats["tailor_exhausted"] = conn.execute(
+            f"SELECT COUNT(*) {uj} AND COALESCE(tailor_attempts, 0) >= 5 AND tailored_resume_path IS NULL", p
+        ).fetchone()[0]
 
-    # Cover letter stage
-    stats["with_cover_letter"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE cover_letter_path IS NOT NULL"
-    ).fetchone()[0]
+        stats["with_cover_letter"] = conn.execute(f"SELECT COUNT(*) {uj} AND cover_letter_path IS NOT NULL", p).fetchone()[0]
 
-    stats["cover_exhausted"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE COALESCE(cover_attempts, 0) >= 5 "
-        "AND (cover_letter_path IS NULL OR cover_letter_path = '')"
-    ).fetchone()[0]
+        stats["cover_exhausted"] = conn.execute(
+            f"SELECT COUNT(*) {uj} AND COALESCE(cover_attempts, 0) >= 5 AND (cover_letter_path IS NULL OR cover_letter_path = '')", p
+        ).fetchone()[0]
 
-    # Application stage
-    stats["applied"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL"
-    ).fetchone()[0]
+        stats["applied"] = conn.execute(f"SELECT COUNT(*) {uj} AND applied_at IS NOT NULL", p).fetchone()[0]
+        stats["apply_errors"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_error IS NOT NULL", p).fetchone()[0]
+        stats["interviews"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_status = 'interview'", p).fetchone()[0]
+        stats["offers"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_status = 'offer'", p).fetchone()[0]
+        stats["rejected"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_status = 'rejected'", p).fetchone()[0]
 
-    stats["apply_errors"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_error IS NOT NULL"
-    ).fetchone()[0]
+        stats["ready_to_apply"] = conn.execute(
+            f"SELECT COUNT(*) {uj} AND tailored_resume_path IS NOT NULL "
+            "AND (apply_status IS NULL OR apply_status NOT IN "
+            "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))",
+            p,
+        ).fetchone()[0]
 
-    stats["interviews"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'interview'"
-    ).fetchone()[0]
+    else:
+        # Legacy: read from jobs table directly (backward compat / pipeline display)
+        stats["scored"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
+        ).fetchone()[0]
 
-    stats["offers"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'offer'"
-    ).fetchone()[0]
+        stats["unscored"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE full_description IS NOT NULL "
+            "AND filtered_at IS NOT NULL "
+            "AND fit_score IS NULL "
+            "AND apply_status != 'location_filtered'"
+        ).fetchone()[0]
 
-    stats["rejected"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE apply_status = 'rejected'"
-    ).fetchone()[0]
+        dist_rows = conn.execute(
+            "SELECT fit_score, COUNT(*) as cnt FROM jobs "
+            "WHERE fit_score IS NOT NULL "
+            "GROUP BY fit_score ORDER BY fit_score DESC"
+        ).fetchall()
+        stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
 
-    stats["ready_to_apply"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs "
-        "WHERE tailored_resume_path IS NOT NULL "
-        "AND (apply_status IS NULL OR apply_status NOT IN "
-        "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))"
-    ).fetchone()[0]
+        stats["tailored"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL"
+        ).fetchone()[0]
+
+        stats["untailored_eligible"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE fit_score >= 7 AND full_description IS NOT NULL "
+            "AND tailored_resume_path IS NULL "
+            "AND COALESCE(tailor_attempts, 0) < 5 "
+            "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))"
+        ).fetchone()[0]
+
+        stats["tailor_exhausted"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE COALESCE(tailor_attempts, 0) >= 5 "
+            "AND tailored_resume_path IS NULL"
+        ).fetchone()[0]
+
+        stats["with_cover_letter"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE cover_letter_path IS NOT NULL"
+        ).fetchone()[0]
+
+        stats["cover_exhausted"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE COALESCE(cover_attempts, 0) >= 5 "
+            "AND (cover_letter_path IS NULL OR cover_letter_path = '')"
+        ).fetchone()[0]
+
+        stats["applied"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL"
+        ).fetchone()[0]
+
+        stats["apply_errors"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE apply_error IS NOT NULL"
+        ).fetchone()[0]
+
+        stats["interviews"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'interview'"
+        ).fetchone()[0]
+
+        stats["offers"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'offer'"
+        ).fetchone()[0]
+
+        stats["rejected"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'rejected'"
+        ).fetchone()[0]
+
+        stats["ready_to_apply"] = conn.execute(
+            "SELECT COUNT(*) FROM jobs "
+            "WHERE tailored_resume_path IS NOT NULL "
+            "AND (apply_status IS NULL OR apply_status NOT IN "
+            "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))"
+        ).fetchone()[0]
 
     return stats
 
 
 def is_duplicate(conn: sqlite3.Connection, title: str | None,
                   company: str | None) -> bool:
-    """Check if a job with the same normalized (title, company) already exists.
-
-    Used to deduplicate the same role posted across multiple job boards.
-    Only applies when both title and company are non-empty.
-    """
+    """Check if a job with the same normalized (title, company) already exists."""
     if not title or not company:
         return False
     row = conn.execute(
@@ -568,17 +724,7 @@ def is_duplicate(conn: sqlite3.Connection, title: str | None,
 
 def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
                site: str, strategy: str) -> tuple[int, int]:
-    """Store discovered jobs, skipping duplicates by URL or (title, company).
-
-    Args:
-        conn: Database connection.
-        jobs: List of job dicts with keys: url, title, company, salary, description, location.
-        site: Source site name (e.g. "RemoteOK", "Dice").
-        strategy: Extraction strategy used (e.g. "json_ld", "api_response", "css_selectors").
-
-    Returns:
-        Tuple of (new_count, duplicate_count).
-    """
+    """Store discovered jobs, skipping duplicates by URL or (title, company)."""
     now = datetime.now(timezone.utc).isoformat()
     new = 0
     existing = 0
@@ -609,59 +755,94 @@ def store_jobs(conn: sqlite3.Connection, jobs: list[dict],
 def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
                       stage: str = "discovered",
                       min_score: int | None = None,
-                      limit: int = 100) -> list[dict]:
+                      limit: int = 100,
+                      user_id: int | None = None) -> list[dict]:
     """Fetch jobs filtered by pipeline stage.
 
-    Args:
-        conn: Database connection. Uses get_connection() if None.
-        stage: One of "discovered", "enriched", "scored", "tailored", "applied".
-        min_score: Minimum fit_score filter (only relevant for scored+ stages).
-        limit: Maximum number of rows to return.
-
-    Returns:
-        List of job dicts.
+    When user_id is provided, score/tailor/cover conditions are evaluated
+    against user_jobs. When None, falls back to the jobs table columns.
     """
     if conn is None:
         conn = get_connection()
 
-    conditions = {
-        "discovered": "1=1",
-        "pending_detail": "detail_scraped_at IS NULL",
-        "enriched": "full_description IS NOT NULL",
-        "pending_score": "full_description IS NOT NULL AND fit_score IS NULL",
-        "scored": "fit_score IS NOT NULL",
-        "pending_tailor": (
-            "fit_score >= ? AND full_description IS NOT NULL "
-            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
-        ),
-        "tailored": "tailored_resume_path IS NOT NULL",
-        "pending_apply": (
-            "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
-            "AND application_url IS NOT NULL"
-        ),
-        "applied": "applied_at IS NOT NULL",
-    }
+    if user_id is not None:
+        # User-scoped queries join user_jobs
+        conditions = {
+            "discovered": "1=1",
+            "pending_detail": "j.detail_scraped_at IS NULL",
+            "enriched": "j.full_description IS NOT NULL",
+            "pending_score": (
+                "j.full_description IS NOT NULL "
+                "AND (uj.fit_score IS NULL OR uj.user_id IS NULL)"
+            ),
+            "scored": "uj.fit_score IS NOT NULL",
+            "pending_tailor": (
+                "uj.fit_score >= ? AND j.full_description IS NOT NULL "
+                "AND uj.tailored_resume_path IS NULL AND COALESCE(uj.tailor_attempts, 0) < 5"
+            ),
+            "tailored": "uj.tailored_resume_path IS NOT NULL",
+            "pending_apply": (
+                "uj.tailored_resume_path IS NOT NULL AND uj.applied_at IS NULL "
+                "AND j.application_url IS NOT NULL"
+            ),
+            "applied": "uj.applied_at IS NOT NULL",
+        }
+        where = conditions.get(stage, "1=1")
+        params: list = [user_id]
+        if "?" in where and min_score is not None:
+            params.insert(0, min_score)
+        elif "?" in where:
+            params.insert(0, 7)
 
-    where = conditions.get(stage, "1=1")
-    params: list = []
+        query = (
+            f"SELECT j.*, uj.fit_score, uj.score_reasoning, uj.scored_at, "
+            f"uj.tailored_resume_path, uj.tailored_at, uj.tailor_attempts, "
+            f"uj.cover_letter_path, uj.cover_letter_at, uj.cover_attempts, "
+            f"uj.apply_status, uj.applied_at, uj.apply_error, uj.favorited "
+            f"FROM jobs j "
+            f"LEFT JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+            f"WHERE {where} ORDER BY uj.fit_score DESC NULLS LAST, j.discovered_at DESC"
+        )
+        if limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
+    else:
+        # Legacy: no user context
+        conditions = {
+            "discovered": "1=1",
+            "pending_detail": "detail_scraped_at IS NULL",
+            "enriched": "full_description IS NOT NULL",
+            "pending_score": "full_description IS NOT NULL AND fit_score IS NULL",
+            "scored": "fit_score IS NOT NULL",
+            "pending_tailor": (
+                "fit_score >= ? AND full_description IS NOT NULL "
+                "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5"
+            ),
+            "tailored": "tailored_resume_path IS NOT NULL",
+            "pending_apply": (
+                "tailored_resume_path IS NOT NULL AND applied_at IS NULL "
+                "AND application_url IS NOT NULL"
+            ),
+            "applied": "applied_at IS NOT NULL",
+        }
+        where = conditions.get(stage, "1=1")
+        params = []
+        if "?" in where and min_score is not None:
+            params.append(min_score)
+        elif "?" in where:
+            params.append(7)
 
-    if "?" in where and min_score is not None:
-        params.append(min_score)
-    elif "?" in where:
-        params.append(7)  # default min_score
+        if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
+            where += " AND fit_score >= ?"
+            params.append(min_score)
 
-    if min_score is not None and "fit_score" not in where and stage in ("scored", "tailored", "applied"):
-        where += " AND fit_score >= ?"
-        params.append(min_score)
-
-    query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
-    if limit > 0:
-        query += " LIMIT ?"
-        params.append(limit)
+        query = f"SELECT * FROM jobs WHERE {where} ORDER BY fit_score DESC NULLS LAST, discovered_at DESC"
+        if limit > 0:
+            query += " LIMIT ?"
+            params.append(limit)
 
     rows = conn.execute(query, params).fetchall()
 
-    # Convert sqlite3.Row objects to dicts
     if rows:
         columns = rows[0].keys()
         return [dict(zip(columns, row)) for row in rows]

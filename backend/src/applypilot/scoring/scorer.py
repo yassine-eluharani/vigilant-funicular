@@ -1,9 +1,4 @@
-"""Job fit scoring: LLM-powered evaluation of candidate-job match quality.
-
-Scores jobs on a 1-10 scale by comparing the user's resume against each
-job description. All personal data is loaded at runtime from the user's
-profile and resume file.
-"""
+"""Job fit scoring: LLM-powered evaluation of candidate-job match quality."""
 
 import json
 import logging
@@ -11,8 +6,8 @@ import re
 import time
 from datetime import datetime, timezone
 
-from applypilot.config import RESUME_PATH, load_profile, load_search_config
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.config import get_resume_text, load_profile, load_search_config
+from applypilot.database import get_connection, get_jobs_by_stage, upsert_user_job
 from applypilot.llm import get_client
 
 log = logging.getLogger(__name__)
@@ -68,7 +63,6 @@ REASONING: [2-3 sentences — lead with geographic eligibility assessment, then 
 
 
 def _build_score_prompt(profile: dict, search_cfg: dict) -> str:
-    """Build the scoring prompt injecting candidate location and work auth context."""
     personal = profile.get("personal", {})
     wa = profile.get("work_authorization", {})
 
@@ -91,7 +85,6 @@ def _build_score_prompt(profile: dict, search_cfg: dict) -> str:
     else:
         work_auth_summary = f"Authorization status unclear. Permit: {permit or 'N/A'}"
 
-    # Build target regions from searches config location_accept list
     accept = search_cfg.get("location_accept", [])
     if accept:
         target_regions = ", ".join(a.title() for a in accept[:15])
@@ -106,14 +99,6 @@ def _build_score_prompt(profile: dict, search_cfg: dict) -> str:
 
 
 def _parse_score_response(response: str) -> dict:
-    """Parse the LLM's score response into structured data.
-
-    Args:
-        response: Raw LLM response text.
-
-    Returns:
-        {"score": int, "keywords": str, "reasoning": str}
-    """
     score = 0
     keywords = ""
     reasoning = response
@@ -135,16 +120,6 @@ def _parse_score_response(response: str) -> dict:
 
 
 def score_job(resume_text: str, job: dict, score_prompt: str) -> dict:
-    """Score a single job against the resume using the candidate-aware prompt.
-
-    Args:
-        resume_text: The candidate's full resume text.
-        job: Job dict with keys: title, site, location, full_description.
-        score_prompt: Pre-built prompt string from _build_score_prompt().
-
-    Returns:
-        {"score": int, "keywords": str, "reasoning": str}
-    """
     job_text = (
         f"TITLE: {job['title']}\n"
         f"COMPANY: {job.get('site', 'Unknown')}\n"
@@ -166,35 +141,54 @@ def score_job(resume_text: str, job: dict, score_prompt: str) -> dict:
         return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
 
 
-def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
+def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = False) -> dict:
     """Score unscored jobs that have full descriptions.
 
     Args:
+        user_id: If provided, reads profile/resume from DB and writes scores
+                 to user_jobs. If None, falls back to filesystem (legacy).
         limit: Maximum number of jobs to score in this run.
         rescore: If True, re-score all jobs (not just unscored ones).
-
-    Returns:
-        {"scored": int, "errors": int, "elapsed": float, "distribution": list}
     """
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
-    profile = load_profile()
-    search_cfg = load_search_config()
+    resume_text = get_resume_text(user_id)
+    profile = load_profile(user_id)
+    search_cfg = load_search_config(user_id)
     score_prompt = _build_score_prompt(profile, search_cfg)
     conn = get_connection()
 
-    if rescore:
-        query = "SELECT * FROM jobs WHERE full_description IS NOT NULL"
-        if limit > 0:
-            query += f" LIMIT {limit}"
-        jobs = conn.execute(query).fetchall()
+    if user_id is not None:
+        if rescore:
+            query = (
+                "SELECT j.* FROM jobs j WHERE j.full_description IS NOT NULL"
+            )
+            if limit > 0:
+                query += f" LIMIT {limit}"
+            rows = conn.execute(query).fetchall()
+            if rows:
+                cols = rows[0].keys()
+                jobs = [dict(zip(cols, r)) for r in rows]
+            else:
+                jobs = []
+        else:
+            jobs = get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit, user_id=user_id)
     else:
-        jobs = get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit)
+        if rescore:
+            query = "SELECT * FROM jobs WHERE full_description IS NOT NULL"
+            if limit > 0:
+                query += f" LIMIT {limit}"
+            rows = conn.execute(query).fetchall()
+            if rows:
+                cols = rows[0].keys()
+                jobs = [dict(zip(cols, r)) for r in rows]
+            else:
+                jobs = []
+        else:
+            jobs = get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit)
 
     if not jobs:
         log.info("No unscored jobs with descriptions found.")
         return {"scored": 0, "errors": 0, "elapsed": 0.0, "distribution": []}
 
-    # Convert sqlite3.Row to dicts if needed
     if jobs and not isinstance(jobs[0], dict):
         columns = jobs[0].keys()
         jobs = [dict(zip(columns, row)) for row in jobs]
@@ -203,6 +197,7 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
              len(jobs),
              profile.get("personal", {}).get("country", "?"),
              profile.get("work_authorization", {}).get("require_sponsorship", "?"))
+
     t0 = time.time()
     completed = 0
     errors = 0
@@ -223,24 +218,40 @@ def run_scoring(limit: int = 0, rescore: bool = False) -> dict:
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
         )
 
-    # Write scores to DB
+    # Write scores to user_jobs (or legacy jobs table)
     now = datetime.now(timezone.utc).isoformat()
     for r in results:
-        conn.execute(
-            "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-            (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-        )
-    conn.commit()
+        if user_id is not None:
+            upsert_user_job(
+                conn, user_id, r["url"],
+                fit_score=r["score"],
+                score_reasoning=f"{r['keywords']}\n{r['reasoning']}",
+                scored_at=now,
+            )
+        else:
+            conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
+            )
+    if user_id is None:
+        conn.commit()
 
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
 
-    # Score distribution
-    dist = conn.execute("""
-        SELECT fit_score, COUNT(*) FROM jobs
-        WHERE fit_score IS NOT NULL
-        GROUP BY fit_score ORDER BY fit_score DESC
-    """).fetchall()
+    if user_id is not None:
+        dist = conn.execute(
+            "SELECT fit_score, COUNT(*) FROM user_jobs "
+            "WHERE user_id = ? AND fit_score IS NOT NULL "
+            "GROUP BY fit_score ORDER BY fit_score DESC",
+            (user_id,),
+        ).fetchall()
+    else:
+        dist = conn.execute(
+            "SELECT fit_score, COUNT(*) FROM jobs "
+            "WHERE fit_score IS NOT NULL "
+            "GROUP BY fit_score ORDER BY fit_score DESC"
+        ).fetchall()
     distribution = [(row[0], row[1]) for row in dist]
 
     return {

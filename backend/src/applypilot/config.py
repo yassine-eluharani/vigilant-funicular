@@ -30,9 +30,16 @@ def ensure_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 
-def load_profile() -> dict:
-    """Load user profile from ~/.applypilot/profile.json."""
+def load_profile(user_id: int | None = None) -> dict:
+    """Load user profile. If user_id is given, reads from users.profile_json in DB."""
     import json
+    if user_id is not None:
+        from applypilot.database import get_connection
+        conn = get_connection()
+        row = conn.execute("SELECT profile_json FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row and row[0]:
+            return json.loads(row[0])
+        # Fall through to filesystem if no DB profile yet
     if not PROFILE_PATH.exists():
         raise FileNotFoundError(
             f"Profile not found at {PROFILE_PATH}. Run `applypilot init` first."
@@ -40,16 +47,34 @@ def load_profile() -> dict:
     return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
 
 
-def load_search_config() -> dict:
-    """Load search configuration from ~/.applypilot/searches.yaml."""
-    import yaml
+def load_search_config(user_id: int | None = None) -> dict:
+    """Load search config. If user_id is given, reads from users.searches_json in DB."""
+    import yaml, json
+    if user_id is not None:
+        from applypilot.database import get_connection
+        conn = get_connection()
+        row = conn.execute("SELECT searches_json FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row and row[0]:
+            return json.loads(row[0])
     if not SEARCH_CONFIG_PATH.exists():
-        # Fall back to package-shipped example
         example = CONFIG_DIR / "searches.example.yaml"
         if example.exists():
             return yaml.safe_load(example.read_text(encoding="utf-8"))
         return {}
     return yaml.safe_load(SEARCH_CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def get_resume_text(user_id: int | None = None) -> str:
+    """Load resume text. If user_id is given, reads from users.resume_text in DB."""
+    if user_id is not None:
+        from applypilot.database import get_connection
+        conn = get_connection()
+        row = conn.execute("SELECT resume_text FROM users WHERE id = ?", (user_id,)).fetchone()
+        if row and row[0]:
+            return row[0]
+    if RESUME_PATH.exists():
+        return RESUME_PATH.read_text(encoding="utf-8")
+    return ""
 
 
 def load_sites_config() -> dict:

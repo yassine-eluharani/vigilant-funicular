@@ -16,8 +16,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from applypilot.config import RESUME_PATH, TAILORED_DIR, load_profile
-from applypilot.database import get_connection, get_jobs_by_stage
+from applypilot.config import RESUME_PATH, TAILORED_DIR, get_resume_text, load_profile
+from applypilot.database import get_connection, get_jobs_by_stage, upsert_user_job
 from applypilot.llm import get_client
 from applypilot.scoring.validator import (
     BANNED_WORDS,
@@ -461,21 +461,22 @@ def tailor_resume(
 
 # ── Single-Job Entry Point ────────────────────────────────────────────────
 
-def tailor_job_by_url(job_url: str, validation_mode: str = "normal") -> dict:
+def tailor_job_by_url(
+    job_url: str, user_id: int | None = None, validation_mode: str = "normal"
+) -> dict:
     """Tailor a resume for a single job identified by URL.
-
-    Reuses tailor_resume() and the same file-write/DB-update logic
-    as run_tailoring(), but for exactly one job.
 
     Args:
         job_url:         The job's primary URL (DB primary key).
+        user_id:         If provided, reads profile/resume from DB and writes
+                         to user_jobs. Files stored under users/{user_id}/.
         validation_mode: "strict", "normal", or "lenient".
 
     Returns:
         {"status": str, "path": str|None, "pdf_path": str|None, "error": str|None}
     """
-    profile = load_profile()
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    profile = load_profile(user_id)
+    resume_text = get_resume_text(user_id)
     conn = get_connection()
 
     row = conn.execute(
@@ -498,18 +499,25 @@ def tailor_job_by_url(job_url: str, validation_mode: str = "normal") -> dict:
 
     prefix = _make_prefix(job)
 
-    TAILORED_DIR.mkdir(parents=True, exist_ok=True)
-    txt_path = TAILORED_DIR / f"{prefix}.txt"
+    # User-namespaced output dir
+    if user_id is not None:
+        from applypilot.config import APP_DIR
+        out_dir = APP_DIR / "users" / str(user_id) / "tailored_resumes"
+    else:
+        out_dir = TAILORED_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    txt_path = out_dir / f"{prefix}.txt"
     txt_path.write_text(tailored, encoding="utf-8")
 
-    job_path = TAILORED_DIR / f"{prefix}_JOB.txt"
+    job_path = out_dir / f"{prefix}_JOB.txt"
     job_path.write_text(
         f"Title: {job['title']}\nCompany: {job['site']}\nURL: {job['url']}\n\n"
         f"{job.get('full_description', '')}",
         encoding="utf-8",
     )
 
-    report_path = TAILORED_DIR / f"{prefix}_REPORT.json"
+    report_path = out_dir / f"{prefix}_REPORT.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
     pdf_path = None
@@ -522,14 +530,25 @@ def tailor_job_by_url(job_url: str, validation_mode: str = "normal") -> dict:
             log.debug("PDF generation failed for %s", txt_path, exc_info=True)
 
     now = datetime.now(timezone.utc).isoformat()
-    # Always save the path — even if validation didn't fully pass, the content
-    # is the best attempt and the user should be able to see and edit it.
-    conn.execute(
-        "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
-        "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-        (str(txt_path), now, job_url),
-    )
-    conn.commit()
+    if user_id is not None:
+        upsert_user_job(
+            conn, user_id, job_url,
+            tailored_resume_path=str(txt_path),
+            tailored_at=now,
+            tailor_attempts=(
+                (conn.execute(
+                    "SELECT COALESCE(tailor_attempts, 0) FROM user_jobs WHERE user_id = ? AND job_url = ?",
+                    (user_id, job_url),
+                ).fetchone() or [0])[0] + 1
+            ),
+        )
+    else:
+        conn.execute(
+            "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+            "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+            (str(txt_path), now, job_url),
+        )
+        conn.commit()
 
     return {
         "status": report["status"],
@@ -541,11 +560,15 @@ def tailor_job_by_url(job_url: str, validation_mode: str = "normal") -> dict:
 
 # ── Batch Entry Point ────────────────────────────────────────────────────
 
-def run_tailoring(min_score: int = 7, limit: int = 20,
-                  validation_mode: str = "normal") -> dict:
+def run_tailoring(
+    user_id: int | None = None, min_score: int = 7, limit: int = 20,
+    validation_mode: str = "normal",
+) -> dict:
     """Generate tailored resumes for high-scoring jobs.
 
     Args:
+        user_id:         If provided, reads profile/resume from DB and writes
+                         to user_jobs. If None, falls back to filesystem.
         min_score:       Minimum fit_score to tailor for.
         limit:           Maximum jobs to process.
         validation_mode: "strict", "normal", or "lenient".
@@ -553,17 +576,22 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
     Returns:
         {"approved": int, "failed": int, "errors": int, "elapsed": float}
     """
-    profile = load_profile()
-    resume_text = RESUME_PATH.read_text(encoding="utf-8")
+    profile = load_profile(user_id)
+    resume_text = get_resume_text(user_id)
     conn = get_connection()
 
-    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit)
+    jobs = get_jobs_by_stage(conn=conn, stage="pending_tailor", min_score=min_score, limit=limit, user_id=user_id)
 
     if not jobs:
         log.info("No untailored jobs with score >= %d.", min_score)
         return {"approved": 0, "failed": 0, "errors": 0, "elapsed": 0.0}
 
-    TAILORED_DIR.mkdir(parents=True, exist_ok=True)
+    if user_id is not None:
+        from applypilot.config import APP_DIR
+        out_dir = APP_DIR / "users" / str(user_id) / "tailored_resumes"
+    else:
+        out_dir = TAILORED_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     log.info("Tailoring resumes for %d jobs (score >= %d)...", len(jobs), min_score)
     t0 = time.time()
     completed = 0
@@ -579,11 +607,11 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             prefix = _make_prefix(job)
 
             # Save tailored resume text
-            txt_path = TAILORED_DIR / f"{prefix}.txt"
+            txt_path = out_dir / f"{prefix}.txt"
             txt_path.write_text(tailored, encoding="utf-8")
 
             # Save job description for traceability
-            job_path = TAILORED_DIR / f"{prefix}_JOB.txt"
+            job_path = out_dir / f"{prefix}_JOB.txt"
             job_desc = (
                 f"Title: {job['title']}\n"
                 f"Company: {job['site']}\n"
@@ -595,7 +623,7 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             job_path.write_text(job_desc, encoding="utf-8")
 
             # Save validation report
-            report_path = TAILORED_DIR / f"{prefix}_REPORT.json"
+            report_path = out_dir / f"{prefix}_REPORT.json"
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
             # Generate PDF for approved resumes (best-effort)
@@ -638,22 +666,38 @@ def run_tailoring(min_score: int = 7, limit: int = 20,
             result["title"][:40],
         )
 
-    # Persist to DB: increment attempt counter for ALL, save path only for approved
+    # Persist to DB
     now = datetime.now(timezone.utc).isoformat()
     _success_statuses = {"approved", "approved_with_judge_warning"}
     for r in results:
-        if r["status"] in _success_statuses:
-            conn.execute(
-                "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
-                "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["path"], now, r["url"]),
-            )
+        if user_id is not None:
+            cur_attempts = (conn.execute(
+                "SELECT COALESCE(tailor_attempts, 0) FROM user_jobs WHERE user_id = ? AND job_url = ?",
+                (user_id, r["url"]),
+            ).fetchone() or [0])[0]
+            if r["status"] in _success_statuses:
+                upsert_user_job(
+                    conn, user_id, r["url"],
+                    tailored_resume_path=r["path"],
+                    tailored_at=now,
+                    tailor_attempts=cur_attempts + 1,
+                )
+            else:
+                upsert_user_job(conn, user_id, r["url"], tailor_attempts=cur_attempts + 1)
         else:
-            conn.execute(
-                "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-                (r["url"],),
-            )
-    conn.commit()
+            if r["status"] in _success_statuses:
+                conn.execute(
+                    "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+                    "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                    (r["path"], now, r["url"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE jobs SET tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
+                    (r["url"],),
+                )
+    if user_id is None:
+        conn.commit()
 
     elapsed = time.time() - t0
     log.info(
