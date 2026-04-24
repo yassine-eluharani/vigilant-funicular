@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { updateProfile, updateSearches, uploadResumePdf, parseResumeCv, getTask } from "@/lib/api";
+import { updateProfile, updateSearches, updateResumeText, uploadResumePdf, parseResumeCv, getTask } from "@/lib/api";
 import type { Profile } from "@/lib/types";
 
 // ── Progress bar ──────────────────────────────────────────────────────────────
@@ -57,9 +57,11 @@ const labelCls = "text-xs text-void-muted block mb-1";
 
 function Step1({
   onExtracted,
+  onResumeText,
   onNext,
 }: {
   onExtracted: (data: Partial<Profile>) => void;
+  onResumeText: (text: string) => void;
   onNext: () => void;
 }) {
   const [mode, setMode] = useState<"upload" | "paste">("upload");
@@ -89,6 +91,7 @@ function Step1({
       const { text: extracted } = await getResumeText();
       if (!extracted) throw new Error("No text extracted from PDF");
       setText(extracted);
+      onResumeText(extracted);
       await doParse(extracted);
     } catch (e) {
       setErrorMsg(String(e));
@@ -141,6 +144,7 @@ function Step1({
     setParsing(true);
     setErrorMsg("");
     try {
+      onResumeText(text);
       await doParse(text);
     } finally {
       setParsing(false);
@@ -595,6 +599,7 @@ export default function SetupPage() {
   const [workAuth, setWorkAuth] = useState<NonNullable<Profile["work_authorization"]>>({});
   const [skills, setSkills] = useState<NonNullable<Profile["skills_boundary"]>>({});
   const [resumeFacts, setResumeFacts] = useState<NonNullable<Profile["resume_facts"]>>({});
+  const [rawResumeText, setRawResumeText] = useState("");
 
   // Search config state
   const [queries, setQueries] = useState<string[]>(["Software Engineer", "Backend Engineer"]);
@@ -627,6 +632,11 @@ export default function SetupPage() {
         resume_facts: resumeFacts,
       };
       await updateProfile(profile);
+
+      // Save raw resume text so the scorer can use it
+      if (rawResumeText.trim()) {
+        await updateResumeText(rawResumeText);
+      }
 
       // Save searches config
       const locationList = locations.split(",").map((l) => l.trim()).filter(Boolean);
@@ -662,7 +672,7 @@ export default function SetupPage() {
 
         {/* Step content */}
         <div className="bg-void-surface border border-void-border rounded-2xl p-6 min-h-[320px]">
-          {step === 1 && <Step1 onExtracted={handleExtracted} onNext={() => setStep(2)} />}
+          {step === 1 && <Step1 onExtracted={handleExtracted} onResumeText={setRawResumeText} onNext={() => setStep(2)} />}
           {step === 2 && <Step2 personal={personal} onChange={setPersonal} />}
           {step === 3 && (
             <Step3

@@ -98,6 +98,11 @@ async def stripe_webhook(request: Request) -> JSONResponse:
                 conn = get_connection()
                 conn.execute("UPDATE users SET tier = 'pro' WHERE id = ?", (int(user_id),))
                 conn.commit()
+                # Flush user cache so next request sees the new tier immediately
+                clerk_row = conn.execute("SELECT clerk_id FROM users WHERE id = ?", (int(user_id),)).fetchone()
+                if clerk_row:
+                    from applypilot.web.auth import invalidate_user_cache
+                    invalidate_user_cache(clerk_row["clerk_id"])
                 log.info("Upgraded user %s to pro via Stripe webhook", user_id)
             except Exception as e:
                 log.error("Failed to upgrade user %s: %s", user_id, e)

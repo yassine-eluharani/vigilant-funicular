@@ -10,8 +10,12 @@ COPY pyproject.toml .
 COPY src ./src
 RUN pip install --no-cache-dir --timeout 120 --retries 5 -e ".[prod]"
 
-# Install Playwright Chromium for PDF generation
-RUN playwright install chromium --with-deps
+# Install Playwright Chromium for PDF generation (skipped in dev to save disk)
+ARG INSTALL_PLAYWRIGHT=false
+RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
+      playwright install chromium --with-deps \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 # ── Development stage ─────────────────────────────────────────────────────────
 FROM base AS development

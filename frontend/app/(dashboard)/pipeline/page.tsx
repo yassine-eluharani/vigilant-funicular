@@ -29,8 +29,13 @@ export default function PipelinePage() {
     setRunning(true);
     resetSSE();
     try {
-      const { task_id } = await runPipeline({ stages: ["score"] });
-      setTaskId(task_id);
+      const result = await runPipeline({ stages: ["score"] });
+      if (result.skipped) {
+        toast("No unscored jobs — all caught up.");
+        setRunning(false);
+        return;
+      }
+      setTaskId(result.task_id);
       toast("Scoring started");
     } catch (e) {
       toast(`Failed to start scoring: ${e}`, false);

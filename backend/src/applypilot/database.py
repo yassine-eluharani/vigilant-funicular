@@ -16,6 +16,10 @@ from applypilot.config import DB_PATH
 # (required for SQLite thread safety with parallel workers)
 _local = threading.local()
 
+# Once-per-process init guard — prevents re-running schema checks on every request
+_db_initialized = False
+_db_init_lock = threading.Lock()
+
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     """Get a thread-local cached DB connection.
@@ -205,6 +209,63 @@ class _TursoConnection:
                 if result.get("type") == "error":
                     raise sqlite3.OperationalError(result["error"]["message"])
 
+    def execute_pipeline(self, statements: list[tuple[str, tuple]]) -> list["_TursoCursor"]:
+        """Execute multiple SQL statements in a single HTTP round trip, returning all results.
+
+        Unlike execute_batch (write-only), this parses and returns a _TursoCursor for each
+        statement — suitable for batching SELECT/COUNT queries.
+        """
+        if not statements:
+            return []
+        requests = []
+        for sql, params in statements:
+            args = [
+                {
+                    "type": (
+                        "integer" if isinstance(p, int) else
+                        "float"   if isinstance(p, float) else
+                        "null"    if p is None else "text"
+                    ),
+                    "value": str(p) if p is not None else None,
+                }
+                for p in params
+            ]
+            requests.append({"type": "execute", "stmt": {"sql": sql, "args": args}})
+        requests.append({"type": "close"})
+        resp = self._client.post(self._http_url, json={"requests": requests}, headers=self._headers)
+        resp.raise_for_status()
+        data = resp.json()
+        cursors = []
+        for result in data["results"][:-1]:  # skip "close"
+            if result.get("type") == "error":
+                raise sqlite3.OperationalError(result["error"]["message"])
+            response = result.get("response", {})
+            rows_data = response.get("result", {})
+            cols = [c["name"] for c in rows_data.get("cols", [])]
+            raw_rows = rows_data.get("rows", [])
+            rows = []
+            for raw in raw_rows:
+                row = _TursoRow()
+                for col, cell in zip(cols, raw):
+                    type_ = cell.get("type")
+                    val = cell.get("value")
+                    if type_ == "null" or val is None:
+                        row[col] = None
+                    elif type_ == "integer":
+                        row[col] = int(val)
+                    elif type_ == "float":
+                        row[col] = float(val)
+                    else:
+                        row[col] = val
+                rows.append(row)
+            lastrowid = rows_data.get("last_insert_rowid")
+            if lastrowid is not None:
+                lastrowid = int(lastrowid)
+            affected = rows_data.get("affected_row_count")
+            rowcount = int(affected) if affected is not None else len(rows)
+            cursors.append(_TursoCursor(rows, lastrowid, rowcount))
+        return cursors
+
     def commit(self) -> None:
         pass  # Turso auto-commits each statement
 
@@ -227,123 +288,148 @@ def close_connection(db_path: Path | str | None = None) -> None:
             conn.close()
 
 
+def batch_query(conn: sqlite3.Connection, statements: list[tuple[str, tuple]]) -> list:
+    """Execute multiple SELECT/COUNT queries in the fewest possible round trips.
+
+    On Turso: sends all statements in a single HTTP POST via execute_pipeline().
+    On local SQLite: executes sequentially (no HTTP overhead).
+
+    Returns a list of cursors in the same order as statements.
+    """
+    if isinstance(conn, _TursoConnection):
+        return conn.execute_pipeline(statements)
+    return [conn.execute(sql, params) for sql, params in statements]
+
+
 def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Create all tables with full schema. Idempotent — safe to call on every startup."""
+    """Create all tables with full schema. Runs once per process — subsequent calls are no-ops."""
+    global _db_initialized
     path = db_path or DB_PATH
-
-    # Ensure parent directory exists
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-
     conn = get_connection(path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            clerk_id      TEXT UNIQUE,
-            email         TEXT UNIQUE NOT NULL,
-            full_name     TEXT NOT NULL,
-            created_at    TEXT NOT NULL,
-            last_login    TEXT,
-            tier                 TEXT DEFAULT 'free',
-            tailors_used         INTEGER DEFAULT 0,
-            covers_used          INTEGER DEFAULT 0,
-            usage_reset_at       TEXT,
-            searches_json        TEXT,
-            profile_json         TEXT,
-            resume_text          TEXT,
-            email_notifications  INTEGER DEFAULT 0
-        )
-    """)
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS discovery_runs (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            query        TEXT NOT NULL,
-            location     TEXT NOT NULL,
-            boards_json  TEXT NOT NULL,
-            started_at   TEXT,
-            completed_at TEXT,
-            status       TEXT DEFAULT 'pending',
-            jobs_found   INTEGER DEFAULT 0
-        )
-    """)
+    if _db_initialized:
+        return conn
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            -- Discovery stage
-            url                   TEXT PRIMARY KEY,
-            title                 TEXT,
-            company               TEXT,
-            salary                TEXT,
-            description           TEXT,
-            location              TEXT,
-            site                  TEXT,
-            strategy              TEXT,
-            discovered_at         TEXT,
+    with _db_init_lock:
+        if _db_initialized:
+            return conn
 
-            -- Enrichment stage
-            full_description      TEXT,
-            application_url       TEXT,
-            detail_scraped_at     TEXT,
-            detail_error          TEXT,
+        # Ensure parent directory exists
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-            -- Filter stage (global — location restriction is a fact about the job)
-            filtered_at           TEXT,
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                clerk_id      TEXT UNIQUE,
+                email         TEXT UNIQUE NOT NULL,
+                full_name     TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                last_login    TEXT,
+                tier                 TEXT DEFAULT 'free',
+                tailors_used         INTEGER DEFAULT 0,
+                covers_used          INTEGER DEFAULT 0,
+                usage_reset_at       TEXT,
+                searches_json        TEXT,
+                profile_json         TEXT,
+                resume_text          TEXT,
+                email_notifications  INTEGER DEFAULT 0
+            )
+        """)
 
-            -- Phase 3: structured metadata extracted once per job
-            job_metadata_json     TEXT,
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS discovery_runs (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                query        TEXT NOT NULL,
+                location     TEXT NOT NULL,
+                boards_json  TEXT NOT NULL,
+                started_at   TEXT,
+                completed_at TEXT,
+                status       TEXT DEFAULT 'pending',
+                jobs_found   INTEGER DEFAULT 0
+            )
+        """)
 
-            -- Legacy per-user columns (kept for backward compat, new writes go to user_jobs)
-            fit_score             INTEGER,
-            score_reasoning       TEXT,
-            scored_at             TEXT,
-            tailored_resume_path  TEXT,
-            tailored_at           TEXT,
-            tailor_attempts       INTEGER DEFAULT 0,
-            cover_letter_path     TEXT,
-            cover_letter_at       TEXT,
-            cover_attempts        INTEGER DEFAULT 0,
-            favorited             INTEGER DEFAULT 0,
-            applied_at            TEXT,
-            apply_status          TEXT,
-            apply_error           TEXT,
-            apply_attempts        INTEGER DEFAULT 0,
-            agent_id              TEXT,
-            last_attempted_at     TEXT,
-            apply_duration_ms     INTEGER,
-            apply_task_id         TEXT,
-            verification_confidence TEXT
-        )
-    """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS jobs (
+                -- Discovery stage
+                url                   TEXT PRIMARY KEY,
+                title                 TEXT,
+                company               TEXT,
+                salary                TEXT,
+                description           TEXT,
+                location              TEXT,
+                site                  TEXT,
+                strategy              TEXT,
+                discovered_at         TEXT,
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_jobs (
-            user_id               INTEGER NOT NULL,
-            job_url               TEXT NOT NULL,
-            fit_score             INTEGER,
-            score_reasoning       TEXT,
-            scored_at             TEXT,
-            tailored_resume_path  TEXT,
-            tailored_at           TEXT,
-            tailor_attempts       INTEGER DEFAULT 0,
-            cover_letter_path     TEXT,
-            cover_letter_at       TEXT,
-            cover_attempts        INTEGER DEFAULT 0,
-            apply_status          TEXT,
-            applied_at            TEXT,
-            apply_error           TEXT,
-            favorited             INTEGER DEFAULT 0,
-            dismissed_at          TEXT,
-            notes                 TEXT,
-            PRIMARY KEY (user_id, job_url),
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (job_url) REFERENCES jobs(url)
-        )
-    """)
-    conn.commit()
+                -- Enrichment stage
+                full_description      TEXT,
+                application_url       TEXT,
+                detail_scraped_at     TEXT,
+                detail_error          TEXT,
 
-    # Run migrations for any columns added after initial schema
-    ensure_columns(conn)
-    ensure_user_columns(conn)
+                -- Filter stage (global — location restriction is a fact about the job)
+                filtered_at           TEXT,
+
+                -- Phase 3: structured metadata extracted once per job
+                job_metadata_json     TEXT,
+
+                -- Legacy per-user columns (kept for backward compat, new writes go to user_jobs)
+                fit_score             INTEGER,
+                score_reasoning       TEXT,
+                scored_at             TEXT,
+                tailored_resume_path  TEXT,
+                tailored_at           TEXT,
+                tailor_attempts       INTEGER DEFAULT 0,
+                cover_letter_path     TEXT,
+                cover_letter_at       TEXT,
+                cover_attempts        INTEGER DEFAULT 0,
+                favorited             INTEGER DEFAULT 0,
+                applied_at            TEXT,
+                apply_status          TEXT,
+                apply_error           TEXT,
+                apply_attempts        INTEGER DEFAULT 0,
+                agent_id              TEXT,
+                last_attempted_at     TEXT,
+                apply_duration_ms     INTEGER,
+                apply_task_id         TEXT,
+                verification_confidence TEXT
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_jobs (
+                user_id               INTEGER NOT NULL,
+                job_url               TEXT NOT NULL,
+                fit_score             INTEGER,
+                score_reasoning       TEXT,
+                scored_at             TEXT,
+                tailored_resume_path  TEXT,
+                tailored_resume_text  TEXT,
+                tailored_at           TEXT,
+                tailor_attempts       INTEGER DEFAULT 0,
+                cover_letter_path     TEXT,
+                cover_letter_text     TEXT,
+                cover_letter_at       TEXT,
+                cover_attempts        INTEGER DEFAULT 0,
+                apply_status          TEXT,
+                applied_at            TEXT,
+                apply_error           TEXT,
+                favorited             INTEGER DEFAULT 0,
+                dismissed_at          TEXT,
+                notes                 TEXT,
+                PRIMARY KEY (user_id, job_url),
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (job_url) REFERENCES jobs(url)
+            )
+        """)
+        conn.commit()
+
+        # Run migrations for any columns added after initial schema
+        ensure_columns(conn)
+        ensure_user_columns(conn)
+
+        _db_initialized = True
 
     return conn
 
@@ -430,9 +516,11 @@ _USER_JOBS_COLUMNS: dict[str, str] = {
     "score_reasoning": "TEXT",
     "scored_at": "TEXT",
     "tailored_resume_path": "TEXT",
+    "tailored_resume_text": "TEXT",
     "tailored_at": "TEXT",
     "tailor_attempts": "INTEGER DEFAULT 0",
     "cover_letter_path": "TEXT",
+    "cover_letter_text": "TEXT",
     "cover_letter_at": "TEXT",
     "cover_attempts": "INTEGER DEFAULT 0",
     "apply_status": "TEXT",
@@ -593,204 +681,209 @@ def migrate_to_user_jobs(conn: sqlite3.Connection | None = None, user_id: int = 
 def get_stats(conn: sqlite3.Connection | None = None, user_id: int | None = None) -> dict:
     """Return job counts by pipeline stage.
 
+    All queries are sent to Turso in a single HTTP call via batch_query().
+
     Args:
         conn: Database connection. Uses get_connection() if None.
-        user_id: When provided, user-specific stats (scores, tailors, etc.)
-                 are scoped to this user via user_jobs. When None, falls back
-                 to the legacy jobs-table columns (backward compat).
+        user_id: When provided, user-specific stats are scoped via user_jobs.
+                 When None, falls back to the legacy jobs-table columns.
     """
     if conn is None:
         conn = get_connection()
 
-    stats: dict = {}
-
-    # Total jobs (global — discovery)
-    stats["total"] = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
-
-    # By site breakdown
-    rows = conn.execute(
-        "SELECT site, COUNT(*) as cnt FROM jobs GROUP BY site ORDER BY cnt DESC"
-    ).fetchall()
-    stats["by_site"] = [(row[0], row[1]) for row in rows]
-
-    # Enrichment stage (global)
-    stats["pending_enrich"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL"
-    ).fetchone()[0]
-    stats["pending_detail"] = stats["pending_enrich"]
-
-    stats["with_description"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL"
-    ).fetchone()[0]
-
-    stats["detail_errors"] = conn.execute(
-        "SELECT COUNT(*) FROM jobs WHERE detail_error IS NOT NULL"
-    ).fetchone()[0]
-
-    # Filter stage (global)
     if user_id is not None:
-        stats["pending_filter"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs j "
-            "WHERE j.full_description IS NOT NULL "
-            "AND j.filtered_at IS NULL "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM user_jobs uj "
-            "  WHERE uj.job_url = j.url AND uj.user_id = ? "
-            "  AND uj.apply_status = 'location_filtered'"
-            ")",
-            (user_id,),
-        ).fetchone()[0]
-        stats["location_filtered"] = conn.execute(
-            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND apply_status = 'location_filtered'",
-            (user_id,),
-        ).fetchone()[0]
-    else:
-        stats["pending_filter"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs "
-            "WHERE full_description IS NOT NULL "
-            "AND filtered_at IS NULL "
-            "AND (apply_status IS NULL OR apply_status = 'failed')"
-        ).fetchone()[0]
-        stats["location_filtered"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'location_filtered'"
-        ).fetchone()[0]
-
-    # User-scoped scoring/tailoring/cover/apply stats
-    if user_id is not None:
+        u = user_id
         uj = "FROM user_jobs WHERE user_id = ?"
-        p = (user_id,)
+        statements: list[tuple[str, tuple]] = [
+            # 0: total
+            ("SELECT COUNT(*) FROM jobs", ()),
+            # 1: by_site
+            ("SELECT site, COUNT(*) as cnt FROM jobs GROUP BY site ORDER BY cnt DESC", ()),
+            # 2: pending_enrich
+            ("SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL", ()),
+            # 3: with_description
+            ("SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL", ()),
+            # 4: detail_errors
+            ("SELECT COUNT(*) FROM jobs WHERE detail_error IS NOT NULL", ()),
+            # 5: pending_filter
+            (
+                "SELECT COUNT(*) FROM jobs j "
+                "WHERE j.full_description IS NOT NULL AND j.filtered_at IS NULL "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? "
+                "  AND uj.apply_status = 'location_filtered')",
+                (u,),
+            ),
+            # 6: location_filtered
+            (f"SELECT COUNT(*) {uj} AND apply_status = 'location_filtered'", (u,)),
+            # 7: scored
+            (f"SELECT COUNT(*) {uj} AND fit_score IS NOT NULL", (u,)),
+            # 8: unscored
+            (
+                "SELECT COUNT(*) FROM jobs j "
+                "WHERE j.full_description IS NOT NULL AND j.filtered_at IS NOT NULL "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL) "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.apply_status = 'location_filtered')",
+                (u, u),
+            ),
+            # 9: score_distribution
+            (
+                f"SELECT fit_score, COUNT(*) as cnt {uj} AND fit_score IS NOT NULL "
+                "GROUP BY fit_score ORDER BY fit_score DESC",
+                (u,),
+            ),
+            # 10: tailored
+            (f"SELECT COUNT(*) {uj} AND tailored_resume_path IS NOT NULL", (u,)),
+            # 11: untailored_eligible
+            (
+                "SELECT COUNT(*) FROM jobs j "
+                "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+                "WHERE uj.fit_score >= 7 AND j.full_description IS NOT NULL "
+                "AND uj.tailored_resume_path IS NULL "
+                "AND COALESCE(uj.tailor_attempts, 0) < 5 "
+                "AND (uj.apply_status IS NULL OR uj.apply_status NOT IN ('dismissed','location_filtered'))",
+                (u,),
+            ),
+            # 12: tailor_exhausted
+            (
+                f"SELECT COUNT(*) {uj} AND COALESCE(tailor_attempts, 0) >= 5 AND tailored_resume_path IS NULL",
+                (u,),
+            ),
+            # 13: with_cover_letter
+            (f"SELECT COUNT(*) {uj} AND cover_letter_path IS NOT NULL", (u,)),
+            # 14: cover_exhausted
+            (
+                f"SELECT COUNT(*) {uj} AND COALESCE(cover_attempts, 0) >= 5 "
+                "AND (cover_letter_path IS NULL OR cover_letter_path = '')",
+                (u,),
+            ),
+            # 15: applied
+            (f"SELECT COUNT(*) {uj} AND applied_at IS NOT NULL", (u,)),
+            # 16: apply_errors
+            (f"SELECT COUNT(*) {uj} AND apply_error IS NOT NULL", (u,)),
+            # 17: interviews
+            (f"SELECT COUNT(*) {uj} AND apply_status = 'interview'", (u,)),
+            # 18: offers
+            (f"SELECT COUNT(*) {uj} AND apply_status = 'offer'", (u,)),
+            # 19: rejected
+            (f"SELECT COUNT(*) {uj} AND apply_status = 'rejected'", (u,)),
+            # 20: ready_to_apply
+            (
+                f"SELECT COUNT(*) {uj} AND tailored_resume_path IS NOT NULL "
+                "AND (apply_status IS NULL OR apply_status NOT IN "
+                "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))",
+                (u,),
+            ),
+        ]
+        r = batch_query(conn, statements)
+        stats: dict = {
+            "total":               r[0].fetchone()[0],
+            "by_site":             [(row[0], row[1]) for row in r[1].fetchall()],
+            "pending_enrich":      r[2].fetchone()[0],
+            "with_description":    r[3].fetchone()[0],
+            "detail_errors":       r[4].fetchone()[0],
+            "pending_filter":      r[5].fetchone()[0],
+            "location_filtered":   r[6].fetchone()[0],
+            "scored":              r[7].fetchone()[0],
+            "unscored":            r[8].fetchone()[0],
+            "score_distribution":  [(row[0], row[1]) for row in r[9].fetchall()],
+            "tailored":            r[10].fetchone()[0],
+            "untailored_eligible": r[11].fetchone()[0],
+            "tailor_exhausted":    r[12].fetchone()[0],
+            "with_cover_letter":   r[13].fetchone()[0],
+            "cover_exhausted":     r[14].fetchone()[0],
+            "applied":             r[15].fetchone()[0],
+            "apply_errors":        r[16].fetchone()[0],
+            "interviews":          r[17].fetchone()[0],
+            "offers":              r[18].fetchone()[0],
+            "rejected":            r[19].fetchone()[0],
+            "ready_to_apply":      r[20].fetchone()[0],
+        }
+        stats["pending_detail"] = stats["pending_enrich"]
+        return stats
 
-        stats["scored"] = conn.execute(f"SELECT COUNT(*) {uj} AND fit_score IS NOT NULL", p).fetchone()[0]
-
-        stats["unscored"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs j "
-            "WHERE j.full_description IS NOT NULL AND j.filtered_at IS NOT NULL "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL"
-            ") "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM user_jobs uj WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.apply_status = 'location_filtered'"
-            ")",
-            (user_id, user_id),
-        ).fetchone()[0]
-
-        dist_rows = conn.execute(
-            f"SELECT fit_score, COUNT(*) as cnt {uj} AND fit_score IS NOT NULL "
-            "GROUP BY fit_score ORDER BY fit_score DESC", p
-        ).fetchall()
-        stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
-
-        stats["tailored"] = conn.execute(f"SELECT COUNT(*) {uj} AND tailored_resume_path IS NOT NULL", p).fetchone()[0]
-
-        stats["untailored_eligible"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs j "
-            "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
-            "WHERE uj.fit_score >= 7 AND j.full_description IS NOT NULL "
-            "AND uj.tailored_resume_path IS NULL "
-            "AND COALESCE(uj.tailor_attempts, 0) < 5 "
-            "AND (uj.apply_status IS NULL OR uj.apply_status NOT IN ('dismissed','location_filtered'))",
-            p,
-        ).fetchone()[0]
-
-        stats["tailor_exhausted"] = conn.execute(
-            f"SELECT COUNT(*) {uj} AND COALESCE(tailor_attempts, 0) >= 5 AND tailored_resume_path IS NULL", p
-        ).fetchone()[0]
-
-        stats["with_cover_letter"] = conn.execute(f"SELECT COUNT(*) {uj} AND cover_letter_path IS NOT NULL", p).fetchone()[0]
-
-        stats["cover_exhausted"] = conn.execute(
-            f"SELECT COUNT(*) {uj} AND COALESCE(cover_attempts, 0) >= 5 AND (cover_letter_path IS NULL OR cover_letter_path = '')", p
-        ).fetchone()[0]
-
-        stats["applied"] = conn.execute(f"SELECT COUNT(*) {uj} AND applied_at IS NOT NULL", p).fetchone()[0]
-        stats["apply_errors"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_error IS NOT NULL", p).fetchone()[0]
-        stats["interviews"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_status = 'interview'", p).fetchone()[0]
-        stats["offers"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_status = 'offer'", p).fetchone()[0]
-        stats["rejected"] = conn.execute(f"SELECT COUNT(*) {uj} AND apply_status = 'rejected'", p).fetchone()[0]
-
-        stats["ready_to_apply"] = conn.execute(
-            f"SELECT COUNT(*) {uj} AND tailored_resume_path IS NOT NULL "
+    # Legacy: no user context — read from jobs table directly
+    statements_legacy: list[tuple[str, tuple]] = [
+        ("SELECT COUNT(*) FROM jobs", ()),
+        ("SELECT site, COUNT(*) as cnt FROM jobs GROUP BY site ORDER BY cnt DESC", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE detail_scraped_at IS NULL", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE detail_error IS NOT NULL", ()),
+        (
+            "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL "
+            "AND filtered_at IS NULL AND (apply_status IS NULL OR apply_status = 'failed')",
+            (),
+        ),
+        ("SELECT COUNT(*) FROM jobs WHERE apply_status = 'location_filtered'", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL", ()),
+        (
+            "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL "
+            "AND filtered_at IS NOT NULL AND fit_score IS NULL "
+            "AND apply_status != 'location_filtered'",
+            (),
+        ),
+        (
+            "SELECT fit_score, COUNT(*) as cnt FROM jobs WHERE fit_score IS NOT NULL "
+            "GROUP BY fit_score ORDER BY fit_score DESC",
+            (),
+        ),
+        ("SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL", ()),
+        (
+            "SELECT COUNT(*) FROM jobs WHERE fit_score >= 7 AND full_description IS NOT NULL "
+            "AND tailored_resume_path IS NULL AND COALESCE(tailor_attempts, 0) < 5 "
+            "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))",
+            (),
+        ),
+        (
+            "SELECT COUNT(*) FROM jobs WHERE COALESCE(tailor_attempts, 0) >= 5 "
+            "AND tailored_resume_path IS NULL",
+            (),
+        ),
+        ("SELECT COUNT(*) FROM jobs WHERE cover_letter_path IS NOT NULL", ()),
+        (
+            "SELECT COUNT(*) FROM jobs WHERE COALESCE(cover_attempts, 0) >= 5 "
+            "AND (cover_letter_path IS NULL OR cover_letter_path = '')",
+            (),
+        ),
+        ("SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE apply_error IS NOT NULL", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE apply_status = 'interview'", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE apply_status = 'offer'", ()),
+        ("SELECT COUNT(*) FROM jobs WHERE apply_status = 'rejected'", ()),
+        (
+            "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL "
             "AND (apply_status IS NULL OR apply_status NOT IN "
             "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))",
-            p,
-        ).fetchone()[0]
-
-    else:
-        # Legacy: read from jobs table directly (backward compat / pipeline display)
-        stats["scored"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE fit_score IS NOT NULL"
-        ).fetchone()[0]
-
-        stats["unscored"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs "
-            "WHERE full_description IS NOT NULL "
-            "AND filtered_at IS NOT NULL "
-            "AND fit_score IS NULL "
-            "AND apply_status != 'location_filtered'"
-        ).fetchone()[0]
-
-        dist_rows = conn.execute(
-            "SELECT fit_score, COUNT(*) as cnt FROM jobs "
-            "WHERE fit_score IS NOT NULL "
-            "GROUP BY fit_score ORDER BY fit_score DESC"
-        ).fetchall()
-        stats["score_distribution"] = [(row[0], row[1]) for row in dist_rows]
-
-        stats["tailored"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE tailored_resume_path IS NOT NULL"
-        ).fetchone()[0]
-
-        stats["untailored_eligible"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs "
-            "WHERE fit_score >= 7 AND full_description IS NOT NULL "
-            "AND tailored_resume_path IS NULL "
-            "AND COALESCE(tailor_attempts, 0) < 5 "
-            "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))"
-        ).fetchone()[0]
-
-        stats["tailor_exhausted"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs "
-            "WHERE COALESCE(tailor_attempts, 0) >= 5 "
-            "AND tailored_resume_path IS NULL"
-        ).fetchone()[0]
-
-        stats["with_cover_letter"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE cover_letter_path IS NOT NULL"
-        ).fetchone()[0]
-
-        stats["cover_exhausted"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs "
-            "WHERE COALESCE(cover_attempts, 0) >= 5 "
-            "AND (cover_letter_path IS NULL OR cover_letter_path = '')"
-        ).fetchone()[0]
-
-        stats["applied"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE applied_at IS NOT NULL"
-        ).fetchone()[0]
-
-        stats["apply_errors"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE apply_error IS NOT NULL"
-        ).fetchone()[0]
-
-        stats["interviews"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'interview'"
-        ).fetchone()[0]
-
-        stats["offers"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'offer'"
-        ).fetchone()[0]
-
-        stats["rejected"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE apply_status = 'rejected'"
-        ).fetchone()[0]
-
-        stats["ready_to_apply"] = conn.execute(
-            "SELECT COUNT(*) FROM jobs "
-            "WHERE tailored_resume_path IS NOT NULL "
-            "AND (apply_status IS NULL OR apply_status NOT IN "
-            "('applied','dismissed','interview','offer','rejected','in_progress','manual','location_filtered'))"
-        ).fetchone()[0]
-
+            (),
+        ),
+    ]
+    r = batch_query(conn, statements_legacy)
+    stats = {
+        "total":               r[0].fetchone()[0],
+        "by_site":             [(row[0], row[1]) for row in r[1].fetchall()],
+        "pending_enrich":      r[2].fetchone()[0],
+        "with_description":    r[3].fetchone()[0],
+        "detail_errors":       r[4].fetchone()[0],
+        "pending_filter":      r[5].fetchone()[0],
+        "location_filtered":   r[6].fetchone()[0],
+        "scored":              r[7].fetchone()[0],
+        "unscored":            r[8].fetchone()[0],
+        "score_distribution":  [(row[0], row[1]) for row in r[9].fetchall()],
+        "tailored":            r[10].fetchone()[0],
+        "untailored_eligible": r[11].fetchone()[0],
+        "tailor_exhausted":    r[12].fetchone()[0],
+        "with_cover_letter":   r[13].fetchone()[0],
+        "cover_exhausted":     r[14].fetchone()[0],
+        "applied":             r[15].fetchone()[0],
+        "apply_errors":        r[16].fetchone()[0],
+        "interviews":          r[17].fetchone()[0],
+        "offers":              r[18].fetchone()[0],
+        "rejected":            r[19].fetchone()[0],
+        "ready_to_apply":      r[20].fetchone()[0],
+    }
+    stats["pending_detail"] = stats["pending_enrich"]
     return stats
 
 

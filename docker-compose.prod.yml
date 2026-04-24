@@ -6,6 +6,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       target: production
+      args:
+        - INSTALL_PLAYWRIGHT=true
     command: uvicorn applypilot.web.server:app --host 0.0.0.0 --port 8000 --workers 2
     environment:
       - APPLYPILOT_DIR=/data

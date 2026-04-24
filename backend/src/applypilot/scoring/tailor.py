@@ -497,63 +497,33 @@ def tailor_job_by_url(
         resume_text, job, profile, max_retries=3, validation_mode=validation_mode
     )
 
-    prefix = _make_prefix(job)
-
-    # User-namespaced output dir
-    if user_id is not None:
-        from applypilot.config import APP_DIR
-        out_dir = APP_DIR / "users" / str(user_id) / "tailored_resumes"
-    else:
-        out_dir = TAILORED_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    txt_path = out_dir / f"{prefix}.txt"
-    txt_path.write_text(tailored, encoding="utf-8")
-
-    job_path = out_dir / f"{prefix}_JOB.txt"
-    job_path.write_text(
-        f"Title: {job['title']}\nCompany: {job['site']}\nURL: {job['url']}\n\n"
-        f"{job.get('full_description', '')}",
-        encoding="utf-8",
-    )
-
-    report_path = out_dir / f"{prefix}_REPORT.json"
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-
-    pdf_path = None
     _success = {"approved", "approved_with_judge_warning"}
-    if report["status"] in _success:
-        try:
-            from applypilot.scoring.pdf import convert_to_pdf
-            pdf_path = str(convert_to_pdf(txt_path))
-        except Exception:
-            log.debug("PDF generation failed for %s", txt_path, exc_info=True)
-
     now = datetime.now(timezone.utc).isoformat()
+
     if user_id is not None:
+        cur_attempts = (conn.execute(
+            "SELECT COALESCE(tailor_attempts, 0) FROM user_jobs WHERE user_id = ? AND job_url = ?",
+            (user_id, job_url),
+        ).fetchone() or [0])[0]
         upsert_user_job(
             conn, user_id, job_url,
-            tailored_resume_path=str(txt_path),
+            tailored_resume_path="db",
+            tailored_resume_text=tailored,
             tailored_at=now,
-            tailor_attempts=(
-                (conn.execute(
-                    "SELECT COALESCE(tailor_attempts, 0) FROM user_jobs WHERE user_id = ? AND job_url = ?",
-                    (user_id, job_url),
-                ).fetchone() or [0])[0] + 1
-            ),
+            tailor_attempts=cur_attempts + 1,
         )
     else:
         conn.execute(
-            "UPDATE jobs SET tailored_resume_path=?, tailored_at=?, "
+            "UPDATE jobs SET tailored_resume_path='db', tailored_at=?, "
             "tailor_attempts=COALESCE(tailor_attempts,0)+1 WHERE url=?",
-            (str(txt_path), now, job_url),
+            (now, job_url),
         )
         conn.commit()
 
     return {
         "status": report["status"],
-        "path": str(txt_path) if report["status"] in _success else None,
-        "pdf_path": pdf_path,
+        "path": None,
+        "pdf_path": None,
         "error": None,
     }
 

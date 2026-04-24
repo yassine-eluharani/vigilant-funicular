@@ -355,6 +355,29 @@ def render_pdf(html: str, output_path: str) -> None:
         browser.close()
 
 
+def text_to_pdf_bytes(text: str) -> bytes:
+    """Convert resume/cover-letter text to PDF bytes in memory (no temp files).
+
+    Used by the API to generate PDFs on-the-fly from DB-stored text.
+    """
+    from playwright.sync_api import sync_playwright
+
+    resume = parse_resume(text)
+    html = build_html(resume)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.set_content(html, wait_until="networkidle")
+        pdf_bytes = page.pdf(
+            format="Letter",
+            margin={"top": "0", "right": "0", "bottom": "0", "left": "0"},
+            print_background=True,
+        )
+        browser.close()
+    return pdf_bytes
+
+
 # ── Public API ───────────────────────────────────────────────────────────
 
 def convert_to_pdf(

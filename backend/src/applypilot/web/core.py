@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 import logging
 import threading
 import uuid
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -22,11 +23,12 @@ _MAX_LOG_LINES = 300
 
 
 class _TaskLogHandler(logging.Handler):
-    """Captures log records and appends them to a task's log_lines list."""
+    """Captures log records, appends to task log_lines, and signals SSE waiters."""
 
-    def __init__(self, lines: list[str]) -> None:
+    def __init__(self, lines: list[str], notify_fn=None) -> None:
         super().__init__()
         self._lines = lines
+        self._notify = notify_fn  # callable() → signals asyncio.Event from thread-safe context
         self.setFormatter(
             logging.Formatter(
                 "%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -39,13 +41,24 @@ class _TaskLogHandler(logging.Handler):
             self._lines.append(self.format(record))
             if len(self._lines) > _MAX_LOG_LINES:
                 self._lines.pop(0)
+            if self._notify:
+                self._notify()
         except Exception:
             pass
 
 
 def _run_task(task_id: str, fn, *args) -> None:
     log_lines: list[str] = _tasks[task_id]["log_lines"]
-    handler = _TaskLogHandler(log_lines)
+
+    def _signal():
+        """Signal the SSE event from the background thread safely."""
+        entry = _tasks.get(task_id, {})
+        loop = entry.get("_loop")
+        event = entry.get("_event")
+        if loop and event and not loop.is_closed():
+            loop.call_soon_threadsafe(event.set)
+
+    handler = _TaskLogHandler(log_lines, notify_fn=_signal)
     root = logging.getLogger()
     root.addHandler(handler)
     try:
@@ -56,13 +69,56 @@ def _run_task(task_id: str, fn, *args) -> None:
         _tasks[task_id].update({"status": "error", "error": str(exc)})
     finally:
         root.removeHandler(handler)
+        _signal()  # ensure SSE generator wakes up to emit the final status
 
 
 def _start_task(fn, *args) -> str:
     task_id = str(uuid.uuid4())[:8]
-    _tasks[task_id] = {"status": "pending", "result": None, "error": None, "log_lines": []}
+    _tasks[task_id] = {
+        "status": "pending",
+        "result": None,
+        "error": None,
+        "log_lines": [],
+        "_loop": None,   # set by SSE handler when a client connects
+        "_event": None,  # asyncio.Event set by _signal() above
+    }
     threading.Thread(target=_run_task, args=(task_id, fn, *args), daemon=True).start()
     return task_id
+
+
+# ---------------------------------------------------------------------------
+# Per-user SSE event bus (stats_changed, task_started, etc.)
+# ---------------------------------------------------------------------------
+
+# user_id → list of asyncio.Queue objects (one per active SSE connection)
+_user_queues: dict[int, list[asyncio.Queue]] = {}
+_user_queues_lock = threading.Lock()
+
+
+def notify_user(user_id: int, event_type: str, data: dict | None = None) -> None:
+    """Push an event to all SSE listeners for a user (thread-safe)."""
+    with _user_queues_lock:
+        queues = list(_user_queues.get(user_id, []))
+    payload = json.dumps({"type": event_type, **(data or {})})
+    for q in queues:
+        try:
+            q.put_nowait({"type": event_type, "payload": payload})
+        except asyncio.QueueFull:
+            pass  # slow consumer — drop the event rather than block
+
+
+def _register_user_queue(user_id: int, q: asyncio.Queue) -> None:
+    with _user_queues_lock:
+        _user_queues.setdefault(user_id, []).append(q)
+
+
+def _unregister_user_queue(user_id: int, q: asyncio.Queue) -> None:
+    with _user_queues_lock:
+        lst = _user_queues.get(user_id, [])
+        try:
+            lst.remove(q)
+        except ValueError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -188,17 +244,8 @@ def row_to_job(row) -> dict:
     for field in ("application_url", "location", "salary"):
         if d.get(field) in ("None", ""):
             d[field] = None
-    path = d.get("tailored_resume_path") or ""
-    if path:
-        p = Path(path)
-        d["has_pdf"] = p.with_suffix(".pdf").exists()
-    else:
-        d["has_pdf"] = False
-    cover = d.get("cover_letter_path") or ""
-    if cover:
-        cp = Path(cover)
-        d["has_cover_pdf"] = cp.with_suffix(".pdf").exists()
-    else:
-        d["has_cover_pdf"] = bool(cover)
+    # Text stored in DB — PDF is generated on-the-fly when requested
+    d["has_pdf"] = bool(d.get("tailored_resume_text") or d.get("tailored_resume_path"))
+    d["has_cover_pdf"] = bool(d.get("cover_letter_text") or d.get("cover_letter_path"))
     d["url_encoded"] = encode_url(d["url"]) if d.get("url") else ""
     return d

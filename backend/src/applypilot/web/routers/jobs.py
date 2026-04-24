@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import datetime
 import time as _time
-from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import JSONResponse
 
-from applypilot.database import get_connection, upsert_user_job
+from applypilot.database import get_connection, upsert_user_job, batch_query
 from applypilot.web.auth import (
     get_current_user,
     get_user_record,
@@ -29,6 +28,8 @@ _STATS_TTL = 30.0  # seconds
 def _invalidate_stats(user_id: int) -> None:
     """Drop the cached stats for a user so the next request recomputes."""
     _stats_cache.pop(user_id, None)
+    from applypilot.web.core import notify_user
+    notify_user(user_id, "stats_changed")
 
 
 # ---------------------------------------------------------------------------
@@ -46,32 +47,37 @@ def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
 
     s = get_stats(user_id=user_id)
     conn = get_connection()
-    pending = conn.execute(
-        "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? "
-        "AND tailored_resume_path IS NOT NULL "
-        "AND (apply_status IS NULL OR apply_status NOT IN ('applied','dismissed'))",
-        (user_id,),
-    ).fetchone()[0]
-    dismissed = conn.execute(
-        "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND apply_status = 'dismissed'",
-        (user_id,),
-    ).fetchone()[0]
-    sites = conn.execute(
-        "SELECT DISTINCT j.site FROM jobs j "
-        "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
-        "WHERE uj.tailored_resume_path IS NOT NULL AND j.site IS NOT NULL ORDER BY j.site",
-        (user_id,),
-    ).fetchall()
-    # Server-side locked count — accurate regardless of pagination
     is_free = user["tier"] == "free"
-    locked_count = 0
-    if is_free:
-        locked_count = conn.execute(
+
+    # Batch the 4 extra queries that the router needs beyond get_stats()
+    extra_stmts: list[tuple[str, tuple]] = [
+        (
             "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? "
-            "AND fit_score >= ? "
+            "AND tailored_resume_path IS NOT NULL "
+            "AND (apply_status IS NULL OR apply_status NOT IN ('applied','dismissed'))",
+            (user_id,),
+        ),
+        (
+            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND apply_status = 'dismissed'",
+            (user_id,),
+        ),
+        (
+            "SELECT DISTINCT j.site FROM jobs j "
+            "JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
+            "WHERE uj.tailored_resume_path IS NOT NULL AND j.site IS NOT NULL ORDER BY j.site",
+            (user_id,),
+        ),
+        (
+            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND fit_score >= ? "
             "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))",
-            (user_id, BLUR_SCORE_THRESHOLD),
-        ).fetchone()[0]
+            (user_id, BLUR_SCORE_THRESHOLD) if is_free else (user_id, 999),
+        ),
+    ]
+    er = batch_query(conn, extra_stmts)
+    pending      = er[0].fetchone()[0]
+    dismissed    = er[1].fetchone()[0]
+    sites        = er[2].fetchall()
+    locked_count = er[3].fetchone()[0] if is_free else 0
 
     payload = {
         "tailored": s["tailored"],
@@ -188,7 +194,8 @@ def list_jobs(
     rows = conn.execute(
         f"SELECT j.url, j.title, j.company, j.site, j.location, j.salary, "
         f"uj.fit_score, uj.score_reasoning, "
-        f"uj.tailored_resume_path, uj.cover_letter_path, uj.apply_status, uj.applied_at, "
+        f"uj.tailored_resume_path, uj.cover_letter_path, "
+        f"uj.apply_status, uj.applied_at, "
         f"j.application_url, j.discovered_at, uj.tailored_at, COALESCE(uj.favorited, 0) as favorited "
         f"{base} WHERE {where} "
         f"ORDER BY uj.fit_score DESC, j.discovered_at DESC "
@@ -228,8 +235,8 @@ def get_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONRes
 
     row = conn.execute(
         "SELECT j.*, uj.fit_score, uj.score_reasoning, uj.scored_at, "
-        "uj.tailored_resume_path, uj.tailored_at, uj.tailor_attempts, "
-        "uj.cover_letter_path, uj.cover_letter_at, uj.cover_attempts, "
+        "uj.tailored_resume_path, uj.tailored_resume_text, uj.tailored_at, uj.tailor_attempts, "
+        "uj.cover_letter_path, uj.cover_letter_text, uj.cover_letter_at, uj.cover_attempts, "
         "uj.apply_status, uj.applied_at, uj.apply_error, "
         "COALESCE(uj.favorited, 0) as favorited "
         "FROM jobs j "
@@ -241,11 +248,9 @@ def get_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONRes
         raise HTTPException(status_code=404, detail="Job not found")
     job = row_to_job(row)
 
-    resume_path = job.get("tailored_resume_path") or ""
-    job["resume_text"] = Path(resume_path).read_text(encoding="utf-8") if resume_path and Path(resume_path).exists() else ""
-
-    cover_path = job.get("cover_letter_path") or ""
-    job["cover_letter_text"] = Path(cover_path).read_text(encoding="utf-8") if cover_path and Path(cover_path).exists() else ""
+    # Resume and cover letter text from DB
+    job["resume_text"] = job.get("tailored_resume_text") or ""
+    job["cover_letter_text"] = job.get("cover_letter_text") or ""
 
     return JSONResponse(job)
 
@@ -255,41 +260,43 @@ def get_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONRes
 # ---------------------------------------------------------------------------
 
 @router.get("/api/resume/{encoded_url}")
-def serve_resume(encoded_url: str, user: dict = Depends(get_current_user)) -> FileResponse:
+def serve_resume(encoded_url: str, user: dict = Depends(get_current_user)) -> Response:
     job_url = decode_url(encoded_url)
     conn = get_connection()
     row = conn.execute(
-        "SELECT tailored_resume_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        "SELECT tailored_resume_text FROM user_jobs WHERE user_id = ? AND job_url = ?",
         (user["id"], job_url),
     ).fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No tailored resume for this job")
-    txt_path = Path(row[0])
-    pdf_path = txt_path.with_suffix(".pdf")
-    if pdf_path.exists():
-        return FileResponse(path=str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
-    elif txt_path.exists():
-        return FileResponse(path=str(txt_path), media_type="text/plain", filename=txt_path.name)
-    raise HTTPException(status_code=404, detail="Resume file not found on disk")
+    text = row[0]
+    try:
+        from applypilot.scoring.pdf import text_to_pdf_bytes
+        pdf_bytes = text_to_pdf_bytes(text)
+        return Response(content=pdf_bytes, media_type="application/pdf",
+                        headers={"Content-Disposition": "inline; filename=resume.pdf"})
+    except Exception:
+        return Response(content=text, media_type="text/plain")
 
 
 @router.get("/api/cover-letter/{encoded_url}")
-def serve_cover_letter(encoded_url: str, user: dict = Depends(get_current_user)) -> FileResponse:
+def serve_cover_letter(encoded_url: str, user: dict = Depends(get_current_user)) -> Response:
     job_url = decode_url(encoded_url)
     conn = get_connection()
     row = conn.execute(
-        "SELECT cover_letter_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+        "SELECT cover_letter_text FROM user_jobs WHERE user_id = ? AND job_url = ?",
         (user["id"], job_url),
     ).fetchone()
     if not row or not row[0]:
         raise HTTPException(status_code=404, detail="No cover letter for this job")
-    txt_path = Path(row[0])
-    pdf_path = txt_path.with_suffix(".pdf")
-    if pdf_path.exists():
-        return FileResponse(path=str(pdf_path), media_type="application/pdf", filename=pdf_path.name)
-    elif txt_path.exists():
-        return FileResponse(path=str(txt_path), media_type="text/plain", filename=txt_path.name)
-    raise HTTPException(status_code=404, detail="Cover letter file not found on disk")
+    text = row[0]
+    try:
+        from applypilot.scoring.pdf import text_to_pdf_bytes
+        pdf_bytes = text_to_pdf_bytes(text)
+        return Response(content=pdf_bytes, media_type="application/pdf",
+                        headers={"Content-Disposition": "inline; filename=cover_letter.pdf"})
+    except Exception:
+        return Response(content=text, media_type="text/plain")
 
 
 # ---------------------------------------------------------------------------
@@ -300,26 +307,10 @@ def serve_cover_letter(encoded_url: str, user: dict = Depends(get_current_user))
 async def save_resume(encoded_url: str, request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
     job_url = decode_url(encoded_url)
     conn = get_connection()
-    row = conn.execute(
-        "SELECT tailored_resume_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
-        (user["id"], job_url),
-    ).fetchone()
-    if not row or not row[0]:
-        raise HTTPException(status_code=404, detail="No tailored resume path for this job")
     body = await request.json()
-    txt_path = Path(row[0])
-    txt_path.write_text(body.get("text", ""), encoding="utf-8")
-
-    def _regen():
-        try:
-            from applypilot.scoring.pdf import convert_to_pdf
-            convert_to_pdf(txt_path)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("PDF regen failed: %s", e)
-
-    task_id = _start_task(_regen)
-    return JSONResponse({"ok": True, "task_id": task_id})
+    text = body.get("text", "")
+    upsert_user_job(conn, user["id"], job_url, tailored_resume_text=text)
+    return JSONResponse({"ok": True})
 
 
 @router.post("/api/jobs/{encoded_url}/tailor")

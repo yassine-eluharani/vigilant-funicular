@@ -156,6 +156,19 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
     score_prompt = _build_score_prompt(profile, search_cfg)
     conn = get_connection()
 
+    # Diagnostic: log what data the scorer is actually using
+    log.info("Scorer input — user_id=%s, resume_len=%d, profile_keys=%s, "
+             "location=%s/%s, sponsorship=%s",
+             user_id, len(resume_text),
+             list(profile.keys()) if profile else "EMPTY",
+             profile.get("personal", {}).get("city", "?"),
+             profile.get("personal", {}).get("country", "?"),
+             profile.get("work_authorization", {}).get("require_sponsorship", "?"))
+
+    if not resume_text.strip():
+        log.warning("⚠ Resume text is EMPTY for user %s — scores will be meaningless. "
+                    "User must save a resume via Profile or Setup.", user_id)
+
     if user_id is not None:
         if rescore:
             query = (
@@ -234,6 +247,23 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
     elapsed = time.time() - t0
     log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
 
+    # Verify scores were persisted
+    if user_id is not None:
+        persisted = conn.execute(
+            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND fit_score IS NOT NULL",
+            (user_id,),
+        ).fetchone()[0]
+        still_unscored = conn.execute(
+            "SELECT COUNT(*) FROM jobs j WHERE j.full_description IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM user_jobs uj "
+            "  WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL"
+            ")",
+            (user_id,),
+        ).fetchone()[0]
+        log.info("Score persistence check — user %d: %d scored in DB, %d still unscored",
+                 user_id, persisted, still_unscored)
+
     if user_id is not None:
         dist = conn.execute(
             "SELECT fit_score, COUNT(*) FROM user_jobs "
@@ -248,6 +278,14 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
             "GROUP BY fit_score ORDER BY fit_score DESC"
         ).fetchall()
     distribution = [(row[0], row[1]) for row in dist]
+
+    # Push stats_changed event so the frontend updates without polling
+    if user_id is not None and results:
+        try:
+            from applypilot.web.core import notify_user
+            notify_user(user_id, "stats_changed")
+        except Exception:
+            pass
 
     # Notify user about newly scored high-match jobs (fire-and-forget)
     if user_id is not None and results:

@@ -383,43 +383,19 @@ def cover_letter_by_url(
 
     job = dict(row)
 
-    # Use tailored resume if available
+    # Use tailored resume from DB if available
     resume_src = resume_text
     if user_id is not None:
         uj_row = conn.execute(
-            "SELECT tailored_resume_path FROM user_jobs WHERE user_id = ? AND job_url = ?",
+            "SELECT tailored_resume_text FROM user_jobs WHERE user_id = ? AND job_url = ?",
             (user_id, job_url),
         ).fetchone()
-        tailored_path = uj_row[0] if uj_row else None
-    else:
-        tailored_path = job.get("tailored_resume_path")
-    if tailored_path and Path(tailored_path).exists():
-        try:
-            resume_src = Path(tailored_path).read_text(encoding="utf-8")
-        except Exception:
-            pass
+        if uj_row and uj_row[0]:
+            resume_src = uj_row[0]
 
     letter = generate_cover_letter(
         resume_src, job, profile, max_retries=3, validation_mode=validation_mode
     )
-
-    prefix = _make_prefix(job)
-
-    if user_id is not None:
-        from applypilot.config import APP_DIR
-        out_dir = APP_DIR / "users" / str(user_id) / "cover_letters"
-    else:
-        out_dir = COVER_LETTER_DIR
-    out_dir.mkdir(parents=True, exist_ok=True)
-    cl_path = out_dir / f"{prefix}_CL.txt"
-    cl_path.write_text(letter, encoding="utf-8")
-
-    pdf_path = None
-    try:
-        from applypilot.scoring.pdf import convert_to_pdf
-        pdf_path = str(convert_to_pdf(cl_path))
-    except Exception:
-        log.debug("PDF generation failed for %s", cl_path, exc_info=True)
 
     now = datetime.now(timezone.utc).isoformat()
     if user_id is not None:
@@ -429,21 +405,22 @@ def cover_letter_by_url(
         ).fetchone() or [0])[0]
         upsert_user_job(
             conn, user_id, job_url,
-            cover_letter_path=str(cl_path),
+            cover_letter_path="db",
+            cover_letter_text=letter,
             cover_letter_at=now,
             cover_attempts=cur_attempts + 1,
         )
     else:
         conn.execute(
-            "UPDATE jobs SET cover_letter_path=?, cover_letter_at=?, "
+            "UPDATE jobs SET cover_letter_path='db', cover_letter_at=?, "
             "cover_attempts=COALESCE(cover_attempts,0)+1 WHERE url=?",
-            (str(cl_path), now, job_url),
+            (now, job_url),
         )
         conn.commit()
 
     return {
         "status": "ok",
-        "path": str(cl_path),
-        "pdf_path": pdf_path,
+        "path": None,
+        "pdf_path": None,
         "error": None,
     }

@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import type { Job } from "@/lib/types";
 import { ScoreBadge } from "./ScoreBadge";
-import { getJob, saveResume, dismissJob, restoreJob, markApplied, markStatus, resumeUrl, coverUrl, tailorJob, coverJob, favoriteJob, getTask } from "@/lib/api";
+import { getJob, saveResume, dismissJob, restoreJob, markApplied, markStatus, resumeUrl, coverUrl, tailorJob, coverJob, favoriteJob } from "@/lib/api";
+import { useTaskProgress } from "@/lib/hooks/useTaskProgress";
 import { useToast } from "@/components/ui/Toast";
 
 interface JobDetailDrawerProps {
@@ -14,6 +15,7 @@ interface JobDetailDrawerProps {
 
 export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetailDrawerProps) {
   const toast = useToast();
+  const { waitForTask } = useTaskProgress();
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<"description" | "resume" | "cover">("description");
@@ -67,20 +69,12 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
     }
   }, [job]);
 
-  const pollUntilDone = useCallback(async (taskId: string) => {
-    for (let i = 0; i < 120; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      const task = await getTask(taskId);
-      if (task.status === "done" || task.status === "error") break;
-    }
-  }, []);
-
   const handleGenerateResume = useCallback(async () => {
     if (!job) return;
     setGeneratingResume(true);
     try {
       const { task_id } = await tailorJob(job.url_encoded);
-      await pollUntilDone(task_id);
+      await waitForTask(task_id);
       const updated = await getJob(job.url_encoded);
       setJob(updated);
       toast("Tailored resume generated");
@@ -89,14 +83,14 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
     } finally {
       setGeneratingResume(false);
     }
-  }, [job, pollUntilDone, toast]);
+  }, [job, waitForTask, toast]);
 
   const handleGenerateCover = useCallback(async () => {
     if (!job) return;
     setGeneratingCover(true);
     try {
       const { task_id } = await coverJob(job.url_encoded);
-      await pollUntilDone(task_id);
+      await waitForTask(task_id);
       const updated = await getJob(job.url_encoded);
       setJob(updated);
       toast("Cover letter generated");
@@ -105,7 +99,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
     } finally {
       setGeneratingCover(false);
     }
-  }, [job, pollUntilDone, toast]);
+  }, [job, waitForTask, toast]);
 
   const handleDismiss = useCallback(async () => {
     if (!job) return;

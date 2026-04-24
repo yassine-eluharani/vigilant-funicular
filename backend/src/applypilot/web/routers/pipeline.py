@@ -29,6 +29,22 @@ async def pipeline_run(request: Request, user: dict = Depends(get_current_user))
     stages = body.get("stages", ["score"])
     workers = int(body.get("workers", 1))
     stream = bool(body.get("stream", False))
+
+    # Guard: don't start a scoring task when there's nothing to score
+    if stages == ["score"]:
+        from applypilot.database import get_connection
+        conn = get_connection()
+        unscored = conn.execute(
+            "SELECT COUNT(*) FROM jobs j WHERE j.full_description IS NOT NULL "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM user_jobs uj "
+            "  WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL"
+            ")",
+            (user["id"],),
+        ).fetchone()[0]
+        if not unscored:
+            return JSONResponse({"task_id": None, "skipped": True, "reason": "no unscored jobs"})
+
     task_id = _start_task(_do_run_pipeline, stages, workers, stream, user["id"])
     return JSONResponse({"task_id": task_id})
 

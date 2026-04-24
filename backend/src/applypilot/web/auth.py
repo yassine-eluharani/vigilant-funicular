@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
-import time
+import time as _monotime
 from datetime import datetime, timezone
 
 import httpx
@@ -52,12 +52,12 @@ def _get_jwks_url() -> str:
 
 def _fetch_jwks(force: bool = False) -> dict:
     global _jwks_cache, _jwks_cached_at
-    if not force and _jwks_cache and (time.time() - _jwks_cached_at) < _JWKS_TTL:
+    if not force and _jwks_cache and (_monotime.time() - _jwks_cached_at) < _JWKS_TTL:
         return _jwks_cache
     resp = httpx.get(_get_jwks_url(), timeout=10)
     resp.raise_for_status()
     _jwks_cache = resp.json()
-    _jwks_cached_at = time.time()
+    _jwks_cached_at = _monotime.time()
     return _jwks_cache
 
 
@@ -116,8 +116,27 @@ def _fetch_clerk_user(clerk_id: str) -> dict | None:
 
 # ── User upsert / sync ────────────────────────────────────────────────────────
 
+# In-process cache: clerk_id → (monotonic_time, user_dict)
+# Prevents 4 Turso HTTP calls per request for the same user.
+_user_cache: dict[str, tuple[float, dict]] = {}
+_USER_CACHE_TTL = 60.0  # seconds
+
+
+def invalidate_user_cache(clerk_id: str) -> None:
+    """Drop a user from the cache — call after profile/tier updates."""
+    _user_cache.pop(clerk_id, None)
+
+
 def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict:
-    """Create or update a local user row from Clerk identity. Returns the full DB row."""
+    """Create or update a local user row from Clerk identity. Returns the full DB row.
+
+    Result is cached per clerk_id for _USER_CACHE_TTL seconds to avoid hitting
+    the DB on every request for the same user.
+    """
+    cached = _user_cache.get(clerk_id)
+    if cached and (_monotime.monotonic() - cached[0]) < _USER_CACHE_TTL:
+        return cached[1].copy()
+
     from applypilot.database import get_connection, init_db
     init_db()
     conn = get_connection()
@@ -137,7 +156,9 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
             )
             conn.commit()
         row = conn.execute("SELECT * FROM users WHERE clerk_id = ?", (clerk_id,)).fetchone()
-        return dict(row)
+        result = dict(row)
+        _user_cache[clerk_id] = (_monotime.monotonic(), result.copy())
+        return result
 
     # New user — fall back to Clerk API if JWT didn't carry email/name
     if not email or not full_name:
@@ -153,7 +174,9 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
     )
     conn.commit()
     row = conn.execute("SELECT * FROM users WHERE clerk_id = ?", (clerk_id,)).fetchone()
-    return dict(row)
+    result = dict(row)
+    _user_cache[clerk_id] = (_monotime.monotonic(), result.copy())
+    return result
 
 
 def _sync_clerk_user(clerk_id: str, email: str | None, full_name: str | None) -> None:
@@ -173,8 +196,7 @@ def _delete_clerk_user(clerk_id: str) -> None:
 
 def get_user_record(user_id: int) -> dict:
     """Fetch full user row including tier + usage counters."""
-    from applypilot.database import get_connection, init_db
-    init_db()
+    from applypilot.database import get_connection
     conn = get_connection()
     row = conn.execute(
         "SELECT id, email, full_name, tier, tailors_used, covers_used, usage_reset_at "

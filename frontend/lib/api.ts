@@ -181,6 +181,7 @@ export const getSystemStatus = (): Promise<SystemStatus> => req("/api/system/sta
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
-export const resumeUrl  = (encodedUrl: string) => `${BASE}/api/resume/${encodedUrl}`;
-export const coverUrl   = (encodedUrl: string) => `${BASE}/api/cover-letter/${encodedUrl}`;
-export const sseTaskUrl = (taskId: string)     => `${BASE}/api/stream/task/${taskId}`;
+export const resumeUrl        = (encodedUrl: string) => `${BASE}/api/resume/${encodedUrl}`;
+export const coverUrl         = (encodedUrl: string) => `${BASE}/api/cover-letter/${encodedUrl}`;
+export const sseTaskUrl       = (taskId: string)     => `${BASE}/api/stream/task/${taskId}`;
+export const sseUserEventsUrl = (token: string)      => `${BASE}/api/stream/user/events?token=${encodeURIComponent(token)}`;
