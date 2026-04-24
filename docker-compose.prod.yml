@@ -39,7 +39,20 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
     depends_on:
       - backend
       - frontend
     restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt
+      - /var/www/certbot:/var/www/certbot
+    profiles:
+      - ssl  # only runs when: docker compose --profile ssl run certbot ...

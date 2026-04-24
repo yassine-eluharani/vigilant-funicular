@@ -45,7 +45,9 @@ async def update_profile(request: Request, user: dict = Depends(get_current_user
         (json.dumps(data, ensure_ascii=False), user["id"]),
     )
     conn.commit()
-    return JSONResponse({"ok": True})
+    from applypilot.web.core import trigger_score_for_user
+    task_id = trigger_score_for_user(user["id"])
+    return JSONResponse({"ok": True, "scoring_task_id": task_id})
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +192,9 @@ async def update_resume_text(request: Request, user: dict = Depends(get_current_
         (body.get("text", ""), user["id"]),
     )
     conn.commit()
-    return JSONResponse({"ok": True})
+    from applypilot.web.core import trigger_score_for_user
+    task_id = trigger_score_for_user(user["id"])
+    return JSONResponse({"ok": True, "scoring_task_id": task_id})
 
 
 @router.post("/api/config/resume/upload")
@@ -200,7 +204,7 @@ async def upload_resume_pdf(request: Request, user: dict = Depends(get_current_u
     if not file:
         raise HTTPException(status_code=400, detail="No file provided")
 
-    dest = APP_DIR / "resume.pdf"
+    dest = APP_DIR / "users" / str(user["id"]) / "resume.pdf"
     dest.parent.mkdir(parents=True, exist_ok=True)
     content = await file.read()
     dest.write_bytes(content)
@@ -287,6 +291,33 @@ async def parse_resume(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Notification preferences
+# ---------------------------------------------------------------------------
+
+@router.get("/api/config/notifications")
+def get_notifications(user: dict = Depends(get_current_user)) -> JSONResponse:
+    from applypilot.database import get_connection
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT email_notifications FROM users WHERE id = ?", (user["id"],)
+    ).fetchone()
+    return JSONResponse({"email_notifications": bool(row["email_notifications"]) if row else False})
+
+
+@router.put("/api/config/notifications")
+async def update_notifications(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
+    body = await request.json()
+    enabled = 1 if body.get("email_notifications") else 0
+    from applypilot.database import get_connection
+    conn = get_connection()
+    conn.execute(
+        "UPDATE users SET email_notifications = ? WHERE id = ?", (enabled, user["id"])
+    )
+    conn.commit()
+    return JSONResponse({"ok": True, "email_notifications": bool(enabled)})
+
+
+# ---------------------------------------------------------------------------
 # System status
 # ---------------------------------------------------------------------------
 
@@ -317,10 +348,3 @@ def scheduler_status() -> JSONResponse:
     return JSONResponse(last_sync_info())
 
 
-@router.post("/api/scheduler/trigger")
-def scheduler_trigger() -> JSONResponse:
-    """Manually kick off a background discovery cycle (runs async)."""
-    from applypilot.web.core import _start_task
-    from applypilot.scheduler import run_cycle
-    task_id = _start_task(run_cycle)
-    return JSONResponse({"ok": True, "task_id": task_id})

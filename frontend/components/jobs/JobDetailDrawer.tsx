@@ -68,7 +68,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
   }, [job]);
 
   const pollUntilDone = useCallback(async (taskId: string) => {
-    while (true) {
+    for (let i = 0; i < 120; i++) {
       await new Promise((r) => setTimeout(r, 1500));
       const task = await getTask(taskId);
       if (task.status === "done" || task.status === "error") break;

@@ -2,10 +2,9 @@ import Link from "next/link";
 
 const TIERS = [
   {
-    name: "Discovery",
-    tier: "Tier 1",
+    name: "Free",
     price: "Free",
-    sub: "No API key required",
+    sub: "No credit card required",
     color: "border-void-border",
     badge: "bg-void-raised text-void-muted",
     cta: "Get started",
@@ -14,53 +13,36 @@ const TIERS = [
       "Job discovery across 5+ major boards",
       "70+ Workday employer portals",
       "Location & title filtering",
-      "Job enrichment (full descriptions)",
-      "SQLite database — all your data local",
-      "Live pipeline dashboard",
-      "Docker-ready self-hosting",
+      "AI fit scoring 1–10 per job",
+      "3 tailored resumes per month",
+      "1 cover letter per month",
+      "Application tracker",
+      "Live scoring dashboard",
     ],
-    missing: ["AI fit scoring", "Resume tailoring", "Cover letters", "PDF generation", "Auto-apply"],
+    missing: [
+      "Unlimited tailored resumes",
+      "Unlimited cover letters",
+      "High-score jobs (≥ 8) visible",
+    ],
   },
   {
-    name: "AI Scoring",
-    tier: "Tier 2",
-    price: "Pay per token",
-    sub: "LLM API key required",
+    name: "Pro",
+    price: "$19",
+    priceSub: "/ month",
+    sub: "Unlimited AI-powered tailoring",
     color: "border-void-accent/50",
     badge: "bg-void-accent/15 text-void-accent border-void-accent/30",
     highlight: true,
-    cta: "Start scoring",
+    cta: "Upgrade to Pro",
     ctaClass: "bg-void-accent text-white hover:bg-indigo-500",
     features: [
-      "Everything in Tier 1",
-      "AI fit scoring 1–10 per job",
-      "Tailored resume per job (LLM)",
-      "Cover letter per job (LLM)",
-      "PDF generation (LaTeX/Pandoc)",
-      "Validation: 42 banned words, anti-hallucination",
-      "Multi-provider: Gemini · OpenAI · Local LLM",
-      "Score dashboard with reasoning",
-    ],
-    missing: ["Auto-apply workers"],
-  },
-  {
-    name: "Auto-Apply",
-    tier: "Tier 3",
-    price: "Pay per token",
-    sub: "LLM + Chrome + Claude CLI",
-    color: "border-purple-500/40",
-    badge: "bg-purple-500/15 text-purple-400 border-purple-500/30",
-    cta: "Full automation",
-    ctaClass: "bg-purple-600 text-white hover:bg-purple-500",
-    features: [
-      "Everything in Tier 2",
-      "Browser automation via Playwright",
-      "Claude Code CLI fills forms intelligently",
-      "Parallel workers (up to 8)",
-      "CAPTCHA solving via CapSolver",
-      "Headless or visible browser mode",
-      "Continuous mode — keeps applying",
-      "Per-worker live status & cost tracking",
+      "Everything in Free",
+      "All high-match jobs fully visible",
+      "Unlimited tailored resumes",
+      "Unlimited cover letters",
+      "PDF export for every application",
+      "Multi-provider LLM: Gemini · OpenAI · Local",
+      "Priority support",
     ],
     missing: [],
   },
@@ -69,7 +51,7 @@ const TIERS = [
 const FAQ = [
   {
     q: "Is there a cloud version?",
-    a: "ApplyPilot is self-hosted — it runs on your machine or your own server. Your data (resumes, profile, API keys) never leaves your infrastructure.",
+    a: "ApplyPilot is self-hosted — it runs on your own server. Your data (resumes, profile, API keys) never leaves your infrastructure.",
   },
   {
     q: "What LLMs are supported?",
@@ -77,34 +59,34 @@ const FAQ = [
   },
   {
     q: "How much does the AI actually cost?",
-    a: "With Gemini Flash, tailoring 50 resumes costs roughly $0.50–$1. Scoring 200 jobs costs under $0.20. Scoring alone uses tiny input-only prompts.",
-  },
-  {
-    q: "Do I need Claude CLI for auto-apply?",
-    a: "Yes — Tier 3 uses Claude Code CLI to intelligently navigate job application forms. You need a Claude API key for that component.",
+    a: "With Gemini Flash, tailoring 50 resumes costs roughly $0.50–$1. Scoring 200 jobs costs under $0.20. The Pro subscription covers the platform — LLM costs are pay-per-use via your own API key.",
   },
   {
     q: "Can I run it without Docker?",
     a: "Absolutely. Install the backend with pip, run Next.js with npm run dev. Docker is provided for convenience, not required.",
+  },
+  {
+    q: "Does ApplyPilot apply to jobs automatically?",
+    a: "No — ApplyPilot prepares your materials (tailored resume, cover letter, PDF) so you can apply with confidence. The submission is always yours to do. You track outcomes in the dashboard.",
   },
 ];
 
 export default function PricingPage() {
   return (
     <div className="py-20 px-6">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-5xl mx-auto">
 
         {/* Header */}
         <div className="text-center mb-16">
           <p className="text-xs font-semibold text-void-accent uppercase tracking-widest mb-3">Pricing</p>
-          <h1 className="text-4xl sm:text-5xl font-bold text-void-text mb-4">Simple, usage-based pricing</h1>
+          <h1 className="text-4xl sm:text-5xl font-bold text-void-text mb-4">Simple, honest pricing</h1>
           <p className="text-void-muted max-w-xl mx-auto">
-            Start free with Tier 1. Pay only for LLM tokens when you want AI scoring or tailoring. No subscriptions, no hidden fees.
+            Start free and score jobs with AI. Upgrade when you want unlimited tailoring and full dashboard access.
           </p>
         </div>
 
         {/* Tier cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-20">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-20 max-w-3xl mx-auto">
           {TIERS.map((t) => (
             <div
               key={t.name}
@@ -116,11 +98,12 @@ export default function PricingPage() {
                 </div>
               )}
 
-              <div className={`self-start px-2.5 py-1 rounded-lg text-xs font-medium border mb-4 ${t.badge}`}>{t.tier}</div>
+              <div className={`self-start px-2.5 py-1 rounded-lg text-xs font-medium border mb-4 ${t.badge}`}>{t.name}</div>
 
               <h2 className="text-xl font-bold text-void-text mb-1">{t.name}</h2>
-              <div className="mb-1">
+              <div className="mb-1 flex items-baseline gap-1">
                 <span className="text-2xl font-bold font-mono text-void-text">{t.price}</span>
+                {"priceSub" in t && <span className="text-sm text-void-muted">{t.priceSub}</span>}
               </div>
               <p className="text-xs text-void-muted mb-6">{t.sub}</p>
 
@@ -155,7 +138,8 @@ export default function PricingPage() {
 
         {/* Token cost estimator */}
         <div className="bg-void-surface border border-void-border rounded-2xl p-8 mb-20">
-          <h2 className="text-lg font-semibold text-void-text mb-6">Estimated LLM costs</h2>
+          <h2 className="text-lg font-semibold text-void-text mb-2">Estimated LLM costs</h2>
+          <p className="text-sm text-void-muted mb-6">You bring your own API key — these are approximate costs charged by the LLM provider, not by ApplyPilot.</p>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -171,7 +155,7 @@ export default function PricingPage() {
                   ["Score 100 jobs",    "$0.05–0.10",   "$0.15–0.30",  "Input only — short prompt + description"],
                   ["Tailor 50 resumes", "$0.40–0.80",   "$1.50–3.00",  "Input + output — full JSON resume"],
                   ["50 cover letters",  "$0.20–0.40",   "$0.80–1.50",  "Input + output — ~300 words each"],
-                  ["Full run (200 jobs, 40 tailored)", "$0.80–1.50", "$3.00–6.00", "End-to-end pipeline"],
+                  ["Full run (200 jobs, 40 tailored)", "$0.80–1.50", "$3.00–6.00", "End-to-end"],
                 ].map(([action, gemini, openai, note]) => (
                   <tr key={action as string}>
                     <td className="py-3 pr-6 text-void-text font-medium">{action}</td>

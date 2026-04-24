@@ -50,11 +50,11 @@ const FEATURES = [
     bg: "bg-purple-500/10 border-purple-500/20",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} className="w-5 h-5">
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15.59 14.37a6 6 0 0 1-5.84 7.38v-4.8m5.84-2.58a14.98 14.98 0 0 0 6.16-12.12A14.98 14.98 0 0 0 9.631 8.41m5.96 5.96a14.926 14.926 0 0 1-5.841 2.58m-.119-8.54a6 6 0 0 0-7.381 5.84h4.8m2.581-5.84a14.927 14.927 0 0 0-2.58 5.84m2.699 2.7c-.103.021-.207.041-.311.06a15.09 15.09 0 0 1-2.448-2.448 14.9 14.9 0 0 1 .06-.312m-2.24 2.39a4.493 4.493 0 0 0-1.757 4.306 4.493 4.493 0 0 0 4.306-1.758M16.5 9a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25ZM6.75 12h.008v.008H6.75V12Zm0 3h.008v.008H6.75V15Zm0 3h.008v.008H6.75V18Z" />
       </svg>
     ),
-    title: "Browser Automation",
-    desc: "Claude Code CLI drives Chrome to fill forms, solve CAPTCHAs, and submit. Parallel workers, fully headless.",
+    title: "Application Tracker",
+    desc: "Mark jobs as applied, track interview stages, offers, and rejections — all in one place.",
   },
   {
     color: "text-void-accent",
@@ -71,9 +71,9 @@ const FEATURES = [
 
 const STEPS = [
   { n: "01", title: "Set up your profile", desc: "Import your CV or fill in your skills, experience, and job preferences. Takes 2 minutes." },
-  { n: "02", title: "Configure searches", desc: "Choose keywords, locations, and job boards. ApplyPilot discovers hundreds of matching jobs." },
-  { n: "03", title: "Run the pipeline", desc: "Discover → Enrich → Filter → Score → Tailor → Cover → PDF. All automated, all parallel." },
-  { n: "04", title: "Auto-apply overnight", desc: "Workers open Chrome, fill applications, and submit — while you sleep." },
+  { n: "02", title: "Configure searches", desc: "Choose keywords, locations, and job boards. ApplyPilot discovers hundreds of matching jobs overnight." },
+  { n: "03", title: "Review your matches", desc: "Jobs are AI-scored 1–10 against your profile. Filter by fit, browse descriptions, and shortlist the ones worth your time." },
+  { n: "04", title: "Tailor, apply, and track", desc: "Generate a tailored resume and cover letter for any job in one click. Apply with confidence, then track your status in the dashboard." },
 ];
 
 export default function LandingPage() {
@@ -94,19 +94,18 @@ export default function LandingPage() {
         <div className="relative max-w-4xl mx-auto text-center">
           <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-void-accent/10 border border-void-accent/25 text-xs text-void-accent font-medium mb-8">
             <span className="w-1.5 h-1.5 rounded-full bg-void-accent animate-pulse inline-block" />
-            AI-powered · 7 pipeline stages · Fully automated
+            AI-powered · 5 pipeline stages · Multi-user SaaS
           </div>
 
           <h1 className="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight mb-6 leading-[1.05]">
-            <span className="text-void-text">Apply to </span>
-            <span className="bg-gradient-to-r from-void-accent via-purple-400 to-void-teal bg-clip-text text-transparent">100 jobs</span>
+            <span className="text-void-text">Stop applying blind.</span>
             <br />
-            <span className="text-void-text">while you sleep</span>
+            <span className="bg-gradient-to-r from-void-accent via-purple-400 to-void-teal bg-clip-text text-transparent">Apply with precision.</span>
           </h1>
 
           <p className="text-lg text-void-muted max-w-2xl mx-auto mb-10 leading-relaxed">
-            ApplyPilot discovers jobs across every major board, scores them with AI, tailors your resume for each role,
-            and submits applications autonomously via browser automation.
+            ApplyPilot discovers jobs across every major board, scores each one against your profile with AI,
+            and generates a tailored resume and cover letter — so every application you send is your best.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
@@ -127,9 +126,9 @@ export default function LandingPage() {
         <div className="max-w-5xl mx-auto px-6 grid grid-cols-2 md:grid-cols-4 gap-8 text-center">
           {[
             { val: "70+",  label: "Job boards & portals" },
-            { val: "7",    label: "Pipeline stages" },
+            { val: "5",    label: "Pipeline stages" },
             { val: "< 2¢", label: "Per tailored resume" },
-            { val: "∞",    label: "Applications / night" },
+            { val: "1–10", label: "AI fit score per job" },
           ].map(({ val, label }) => (
             <div key={label}>
               <p className="text-3xl font-bold font-mono text-void-text mb-1">{val}</p>
@@ -144,8 +143,8 @@ export default function LandingPage() {
         <div className="max-w-6xl mx-auto">
           <div className="text-center mb-16">
             <p className="text-xs font-semibold text-void-accent uppercase tracking-widest mb-3">Everything included</p>
-            <h2 className="text-3xl sm:text-4xl font-bold text-void-text mb-4">The full pipeline, automated</h2>
-            <p className="text-void-muted max-w-xl mx-auto">Every stage from discovery to submission runs in sequence or parallel — no babysitting required.</p>
+            <h2 className="text-3xl sm:text-4xl font-bold text-void-text mb-4">Everything you need to apply smarter</h2>
+            <p className="text-void-muted max-w-xl mx-auto">Automated discovery and scoring surface the best matches — you decide which to pursue, then let AI do the writing.</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
             {FEATURES.map((f) => (
@@ -200,17 +199,16 @@ export default function LandingPage() {
             </div>
             <div className="p-5 font-mono text-xs leading-6 space-y-0.5">
               {([
-                ["text-void-muted",   "[00:00] Starting pipeline: discover → enrich → filter → score"],
-                ["text-void-success", "[00:01] ✓ Discovered 247 jobs (indeed:89 linkedin:94 workday:64)"],
-                ["text-void-success", "[00:03] ✓ Enriched 241/247 jobs (6 failed)"],
-                ["text-void-teal",    "[00:04] ✓ Location filter: 198 passed, 43 rejected (US-only remote)"],
-                ["text-void-accent",  "[00:08] ✓ Scored 198 jobs — avg fit: 6.4 · top score: 9"],
-                ["text-void-accent",  "[00:09]   ★ 9/10  Stripe — Senior Backend Engineer — Remote"],
-                ["text-void-accent",  "[00:09]   ★ 8/10  Vercel — Platform Engineer — Remote"],
-                ["text-void-accent",  "[00:09]   ★ 8/10  Linear — Software Engineer — Remote"],
-                ["text-void-warning", "[00:09] Starting tailor stage (workers=4, min_score=7)"],
-                ["text-void-success", "[00:41] ✓ Tailored 34 resumes · 34 cover letters · 34 PDFs"],
-                ["text-void-success", "[00:41] Pipeline complete. 34 jobs ready to apply."],
+                ["text-void-muted",   "[00:00] Scoring jobs for user — 198 unscored"],
+                ["text-void-muted",   "[00:00] Phase 1: rule pre-filter (visa, location, experience gap)"],
+                ["text-void-teal",    "[00:01] ✓ Pre-filter: 152 passed · 46 rejected"],
+                ["text-void-muted",   "[00:01] Phase 2: heuristic rank (skills similarity)"],
+                ["text-void-teal",    "[00:02] ✓ Top 100 candidates selected for LLM scoring"],
+                ["text-void-accent",  "[00:07] ✓ Scored 100 jobs — avg fit: 6.8 · top score: 9"],
+                ["text-void-accent",  "[00:07]   ★ 9/10  Stripe — Senior Backend Engineer — Remote"],
+                ["text-void-accent",  "[00:07]   ★ 8/10  Vercel — Platform Engineer — Remote"],
+                ["text-void-accent",  "[00:07]   ★ 8/10  Linear — Software Engineer — Remote"],
+                ["text-void-success", "[00:07] Scoring complete. 34 jobs scored ≥ 7 — ready to review."],
               ] as [string, string][]).map(([c, t], i) => (
                 <p key={i} className={c}>{t}</p>
               ))}
@@ -225,7 +223,7 @@ export default function LandingPage() {
         <div className="max-w-4xl mx-auto text-center">
           <p className="text-xs font-semibold text-void-accent uppercase tracking-widest mb-3">Flexible tiers</p>
           <h2 className="text-3xl font-bold text-void-text mb-4">Start free, scale when ready</h2>
-          <p className="text-void-muted mb-10 max-w-lg mx-auto">Run the full discovery pipeline with no API key. Add an LLM key to unlock AI scoring. Add Chrome + Claude CLI for full auto-apply.</p>
+          <p className="text-void-muted mb-10 max-w-lg mx-auto">Free plan includes AI scoring and 3 tailored resumes per month. Upgrade to Pro for unlimited tailoring, cover letters, and full dashboard access.</p>
           <Link href="/pricing" className="inline-flex items-center gap-2 px-6 py-3 rounded-xl border border-void-border text-sm font-medium text-void-text hover:border-void-accent/40 hover:bg-void-raised transition-colors">
             View pricing →
           </Link>

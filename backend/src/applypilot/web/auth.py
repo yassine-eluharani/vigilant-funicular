@@ -147,8 +147,8 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
             full_name = full_name or clerk_data.get("full_name")
 
     conn.execute(
-        "INSERT OR IGNORE INTO users (clerk_id, email, password_hash, full_name, created_at) "
-        "VALUES (?, ?, '', ?, ?)",
+        "INSERT OR IGNORE INTO users (clerk_id, email, full_name, created_at) "
+        "VALUES (?, ?, ?, ?)",
         (clerk_id, email or f"{clerk_id}@unknown.clerk", full_name or "Unknown", now),
     )
     conn.commit()

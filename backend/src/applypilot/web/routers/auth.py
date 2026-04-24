@@ -1,4 +1,4 @@
-"""Auth routes — /me, /upgrade. User sync happens on every request via get_current_user()."""
+"""Auth routes — /me. User sync happens on every request via get_current_user()."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ def me(user: dict = Depends(get_current_user)) -> JSONResponse:
         "email": record["email"],
         "full_name": record["full_name"],
         "tier": record["tier"],
+        "has_profile": bool(record.get("profile_json")),
         "tailors_used": record["tailors_used"],
         "covers_used": record["covers_used"],
         "tailor_limit": FREE_TAILOR_LIMIT if is_free else None,
@@ -36,12 +37,3 @@ def me(user: dict = Depends(get_current_user)) -> JSONResponse:
     })
 
 
-@router.post("/api/auth/upgrade")
-def upgrade(user: dict = Depends(get_current_user)) -> JSONResponse:
-    """Upgrade user to Pro. Placeholder — replace with Stripe webhook in production."""
-    from applypilot.database import get_connection
-    user_id = int(user["sub"])
-    conn = get_connection()
-    conn.execute("UPDATE users SET tier = 'pro' WHERE id = ?", (user_id,))
-    conn.commit()
-    return JSONResponse({"ok": True, "tier": "pro"})

@@ -220,20 +220,15 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
 
     # Write scores to user_jobs (or legacy jobs table)
     now = datetime.now(timezone.utc).isoformat()
-    for r in results:
-        if user_id is not None:
-            upsert_user_job(
-                conn, user_id, r["url"],
-                fit_score=r["score"],
-                score_reasoning=f"{r['keywords']}\n{r['reasoning']}",
-                scored_at=now,
-            )
-        else:
+    if user_id is not None:
+        from applypilot.database import batch_upsert_scores
+        batch_upsert_scores(conn, user_id, results, now)
+    else:
+        for r in results:
             conn.execute(
                 "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
                 (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
             )
-    if user_id is None:
         conn.commit()
 
     elapsed = time.time() - t0
@@ -253,6 +248,16 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
             "GROUP BY fit_score ORDER BY fit_score DESC"
         ).fetchall()
     distribution = [(row[0], row[1]) for row in dist]
+
+    # Notify user about newly scored high-match jobs (fire-and-forget)
+    if user_id is not None and results:
+        high_score_urls = [r["url"] for r in results if r.get("score", 0) >= 7]
+        if high_score_urls:
+            try:
+                from applypilot.notifications import notify_new_high_score_jobs
+                notify_new_high_score_jobs(user_id, high_score_urls)
+            except Exception as e:
+                log.debug("Notification send failed (non-fatal): %s", e)
 
     return {
         "scored": len(results),

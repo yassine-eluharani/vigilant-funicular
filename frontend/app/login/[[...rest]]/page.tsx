@@ -27,7 +27,7 @@ function LoginPanel() {
 
         <div className="relative">
           <blockquote className="text-xl font-medium text-void-text leading-relaxed mb-6">
-            &ldquo;Woke up to 34 tailored applications submitted overnight. Three interviews by lunch.&rdquo;
+            &ldquo;Scored 200 jobs against my profile in minutes. Tailored resume ready before I even finished my coffee.&rdquo;
           </blockquote>
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-full bg-void-accent/20 border border-void-accent/30 flex items-center justify-center text-sm font-bold text-void-accent">Y</div>

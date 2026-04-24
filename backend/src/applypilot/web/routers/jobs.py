@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import time as _time
 from pathlib import Path
 from typing import Optional
 
@@ -16,9 +17,18 @@ from applypilot.web.auth import (
     check_and_increment_usage,
     BLUR_SCORE_THRESHOLD,
 )
-from applypilot.web.core import _start_task, decode_url, row_to_job
+from applypilot.web.core import _start_task, decode_url, row_to_job, tailor_limiter, cover_limiter
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# Stats cache: user_id → (computed_at, payload_dict)
+_stats_cache: dict[int, tuple[float, dict]] = {}
+_STATS_TTL = 30.0  # seconds
+
+
+def _invalidate_stats(user_id: int) -> None:
+    """Drop the cached stats for a user so the next request recomputes."""
+    _stats_cache.pop(user_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +39,11 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
     from applypilot.database import get_stats
     user_id = user["id"]
+
+    cached = _stats_cache.get(user_id)
+    if cached and _time.monotonic() - cached[0] < _STATS_TTL:
+        return JSONResponse(cached[1])
+
     s = get_stats(user_id=user_id)
     conn = get_connection()
     pending = conn.execute(
@@ -47,7 +62,18 @@ def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
         "WHERE uj.tailored_resume_path IS NOT NULL AND j.site IS NOT NULL ORDER BY j.site",
         (user_id,),
     ).fetchall()
-    return JSONResponse({
+    # Server-side locked count — accurate regardless of pagination
+    is_free = user["tier"] == "free"
+    locked_count = 0
+    if is_free:
+        locked_count = conn.execute(
+            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? "
+            "AND fit_score >= ? "
+            "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))",
+            (user_id, BLUR_SCORE_THRESHOLD),
+        ).fetchone()[0]
+
+    payload = {
         "tailored": s["tailored"],
         "pending": pending,
         "applied": s["applied"],
@@ -58,6 +84,7 @@ def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
         "interviews": s["interviews"],
         "offers": s["offers"],
         "rejected": s["rejected"],
+        "locked_count": locked_count,
         "sites": [r[0] for r in sites],
         "funnel": {
             "discovered":        s["total"],
@@ -78,7 +105,9 @@ def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
             "rejected_count":    s["rejected"],
             "apply_errors":      s["apply_errors"],
         },
-    })
+    }
+    _stats_cache[user_id] = (_time.monotonic(), payload)
+    return JSONResponse(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +328,7 @@ def tailor_job(
     user: dict = Depends(get_current_user),
     validation_mode: str = Query("normal"),
 ) -> JSONResponse:
+    tailor_limiter.check(user["id"])
     check_and_increment_usage(user["id"], "tailor")
     job_url = decode_url(encoded_url)
     from applypilot.scoring.tailor import tailor_job_by_url
@@ -325,6 +355,7 @@ def cover_job(
     user: dict = Depends(get_current_user),
     validation_mode: str = Query("normal"),
 ) -> JSONResponse:
+    cover_limiter.check(user["id"])
     check_and_increment_usage(user["id"], "cover")
     job_url = decode_url(encoded_url)
     from applypilot.scoring.cover_letter import cover_letter_by_url
@@ -345,8 +376,9 @@ def _mark_job(user_id: int, job_url: str, status: str) -> None:
         upsert_user_job(
             conn, user_id, job_url,
             apply_status=status,
-            applied_at=datetime.datetime.utcnow().isoformat(),
+            applied_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
         )
+    _invalidate_stats(user_id)
 
 
 @router.post("/api/jobs/{encoded_url}/mark-applied")
@@ -377,15 +409,3 @@ async def mark_status(encoded_url: str, request: Request, user: dict = Depends(g
     _mark_job(user["id"], decode_url(encoded_url), new_status)
     return JSONResponse({"ok": True, "status": new_status})
 
-
-# ---------------------------------------------------------------------------
-# Database management
-# ---------------------------------------------------------------------------
-
-@router.delete("/api/database")
-def purge_database() -> JSONResponse:
-    conn = get_connection()
-    cursor = conn.execute("DELETE FROM jobs")
-    conn.execute("DELETE FROM user_jobs")
-    conn.commit()
-    return JSONResponse({"deleted": cursor.rowcount})

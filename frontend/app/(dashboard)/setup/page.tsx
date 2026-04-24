@@ -637,6 +637,9 @@ export default function SetupPage() {
         defaults: { results_per_site: 100, hours_old: hoursOld },
       });
 
+      // Kick off scoring immediately — profile + resume are now saved
+      import("@/lib/api").then(({ maybeScore }) => maybeScore().catch(() => null));
+
       router.replace("/jobs");
     } catch (e) {
       console.error(e);

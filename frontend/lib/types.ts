@@ -41,6 +41,7 @@ export interface UserInfo {
   email: string;
   full_name: string;
   tier: "free" | "pro";
+  has_profile: boolean;
   tailors_used: number;
   covers_used: number;
   tailor_limit: number | null;
@@ -87,6 +88,7 @@ export interface Stats {
   interviews: number;
   offers: number;
   rejected: number;
+  locked_count: number;
   sites: string[];
   funnel: Funnel;
 }

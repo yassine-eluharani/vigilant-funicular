@@ -69,9 +69,10 @@ def _turso_connection(url: str, token: str) -> sqlite3.Connection:
 class _TursoCursor:
     """Minimal sqlite3.Cursor-compatible wrapper over Turso HTTP responses."""
 
-    def __init__(self, results: list, lastrowid: int | None = None):
+    def __init__(self, results: list, lastrowid: int | None = None, rowcount: int = -1):
         self._rows = results
         self.lastrowid = lastrowid
+        self.rowcount = rowcount
         self.description = None
         if results:
             # Build description from first row keys so sqlite3.Row-like access works
@@ -162,16 +163,59 @@ class _TursoConnection:
         if lastrowid is not None:
             lastrowid = int(lastrowid)
 
-        return _TursoCursor(rows, lastrowid)
+        # affected_row_count from UPDATE/DELETE/INSERT
+        affected = rows_data.get("affected_row_count")
+        rowcount = int(affected) if affected is not None else len(rows)
+
+        return _TursoCursor(rows, lastrowid, rowcount)
 
     def execute(self, sql: str, parameters: tuple = ()) -> _TursoCursor:
         return self._execute_remote(sql, tuple(parameters))
+
+    def execute_batch(self, statements: list[tuple[str, tuple]], chunk_size: int = 100) -> None:
+        """Execute multiple write statements in a single HTTP round trip per chunk.
+
+        Args:
+            statements: List of (sql, params) tuples to execute sequentially.
+            chunk_size: Max statements per HTTP request (default 100).
+        """
+        if not statements:
+            return
+        for i in range(0, len(statements), chunk_size):
+            chunk = statements[i : i + chunk_size]
+            requests = []
+            for sql, params in chunk:
+                args = [
+                    {
+                        "type": (
+                            "integer" if isinstance(p, int) else
+                            "float"   if isinstance(p, float) else
+                            "null"    if p is None else "text"
+                        ),
+                        "value": str(p) if p is not None else None,
+                    }
+                    for p in params
+                ]
+                requests.append({"type": "execute", "stmt": {"sql": sql, "args": args}})
+            requests.append({"type": "close"})
+            resp = self._client.post(self._http_url, json={"requests": requests}, headers=self._headers)
+            resp.raise_for_status()
+            data = resp.json()
+            for result in data["results"][:-1]:  # skip the "close" result
+                if result.get("type") == "error":
+                    raise sqlite3.OperationalError(result["error"]["message"])
 
     def commit(self) -> None:
         pass  # Turso auto-commits each statement
 
     def close(self) -> None:
         self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        return False  # never suppress exceptions
 
 
 def close_connection(db_path: Path | str | None = None) -> None:
@@ -196,17 +240,17 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
             id            INTEGER PRIMARY KEY AUTOINCREMENT,
             clerk_id      TEXT UNIQUE,
             email         TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL DEFAULT '',
             full_name     TEXT NOT NULL,
             created_at    TEXT NOT NULL,
             last_login    TEXT,
-            tier          TEXT DEFAULT 'free',
-            tailors_used  INTEGER DEFAULT 0,
-            covers_used   INTEGER DEFAULT 0,
-            usage_reset_at TEXT,
-            searches_json TEXT,
-            profile_json  TEXT,
-            resume_text   TEXT
+            tier                 TEXT DEFAULT 'free',
+            tailors_used         INTEGER DEFAULT 0,
+            covers_used          INTEGER DEFAULT 0,
+            usage_reset_at       TEXT,
+            searches_json        TEXT,
+            profile_json         TEXT,
+            resume_text          TEXT,
+            email_notifications  INTEGER DEFAULT 0
         )
     """)
 
@@ -378,6 +422,7 @@ _USER_EXTRA_COLUMNS: dict[str, str] = {
     "searches_json": "TEXT",
     "profile_json": "TEXT",
     "resume_text": "TEXT",
+    "email_notifications": "INTEGER DEFAULT 0",
 }
 
 _USER_JOBS_COLUMNS: dict[str, str] = {
@@ -459,6 +504,46 @@ def upsert_user_job(conn: sqlite3.Connection, user_id: int, job_url: str, **fiel
         values + [user_id, job_url],
     )
     conn.commit()
+
+
+def batch_upsert_scores(
+    conn: sqlite3.Connection,
+    user_id: int,
+    results: list[dict],
+    now: str,
+) -> None:
+    """Write fit scores for multiple jobs efficiently.
+
+    On Turso: all upserts are sent in chunked batch HTTP calls.
+    On local SQLite: falls back to sequential upsert (no HTTP overhead anyway).
+
+    Args:
+        conn: Active DB connection.
+        user_id: The user these scores belong to.
+        results: List of dicts with keys: url, score, keywords, reasoning.
+        now: ISO timestamp string for scored_at.
+    """
+    if isinstance(conn, _TursoConnection):
+        stmts: list[tuple[str, tuple]] = []
+        for r in results:
+            stmts.append((
+                "INSERT OR IGNORE INTO user_jobs (user_id, job_url) VALUES (?, ?)",
+                (user_id, r["url"]),
+            ))
+            stmts.append((
+                "UPDATE user_jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? "
+                "WHERE user_id = ? AND job_url = ?",
+                (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, user_id, r["url"]),
+            ))
+        conn.execute_batch(stmts)
+    else:
+        for r in results:
+            upsert_user_job(
+                conn, user_id, r["url"],
+                fit_score=r["score"],
+                score_reasoning=f"{r['keywords']}\n{r['reasoning']}",
+                scored_at=now,
+            )
 
 
 def migrate_to_user_jobs(conn: sqlite3.Connection | None = None, user_id: int = 1) -> int:
@@ -707,6 +792,36 @@ def get_stats(conn: sqlite3.Connection | None = None, user_id: int | None = None
         ).fetchone()[0]
 
     return stats
+
+
+def cleanup_old_jobs(days: int = 60, conn: sqlite3.Connection | None = None) -> int:
+    """Delete jobs older than `days` days that no user has scored, tailored, or applied to.
+
+    Jobs with any meaningful user_jobs record are preserved regardless of age.
+    Returns the number of rows deleted.
+    """
+    if conn is None:
+        conn = get_connection()
+    cursor = conn.execute(
+        """
+        DELETE FROM jobs
+        WHERE discovered_at < datetime('now', ?)
+        AND url NOT IN (
+            SELECT DISTINCT job_url FROM user_jobs
+            WHERE fit_score IS NOT NULL
+               OR tailored_resume_path IS NOT NULL
+               OR cover_letter_path IS NOT NULL
+               OR applied_at IS NOT NULL
+        )
+        """,
+        (f"-{days} days",),
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    if deleted:
+        import logging as _logging
+        _logging.getLogger(__name__).info("Cleanup: deleted %d jobs older than %d days", deleted, days)
+    return deleted
 
 
 def is_duplicate(conn: sqlite3.Connection, title: str | None,

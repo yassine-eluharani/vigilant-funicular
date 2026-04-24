@@ -6,7 +6,7 @@ import { JobFilters, type Filters } from "@/components/jobs/JobFilters";
 import { JobDetailDrawer } from "@/components/jobs/JobDetailDrawer";
 import { useJobs } from "@/lib/hooks/useJobs";
 import { useStats } from "@/lib/hooks/useStats";
-import { dismissJob, markApplied, getMe, upgradeAccount, getSchedulerStatus, triggerScheduler } from "@/lib/api";
+import { dismissJob, markApplied, getMe, createCheckoutSession, getSchedulerStatus, maybeScore } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import type { Job, UserInfo } from "@/lib/types";
 
@@ -31,13 +31,17 @@ function UpgradeModal({
   onClose: () => void;
   onUpgraded: () => void;
 }) {
+  const toast = useToast();
   const [loading, setLoading] = useState(false);
 
   const handleUpgrade = async () => {
     setLoading(true);
     try {
-      await upgradeAccount();
-      onUpgraded();
+      const { checkout_url } = await createCheckoutSession();
+      window.location.href = checkout_url;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast(msg.includes("503") ? "Payments not configured — contact support." : "Upgrade failed. Please try again.", "error");
     } finally {
       setLoading(false);
     }
@@ -129,31 +133,23 @@ export default function JobsPage() {
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [syncInfo, setSyncInfo] = useState<{ last_sync: string | null; jobs_found: number } | null>(null);
-  const [syncing, setSyncing] = useState(false);
   const { jobs, total, loading, loadingMore, hasMore, loadMore, refresh } = useJobs(filters);
   const { stats } = useStats();
 
   const visibleJobs = jobs.filter((j) => !j.locked);
-  const lockedCount = jobs.filter((j) => j.locked).length;
+  // Use server-side locked count from stats — accurate regardless of pagination
+  const lockedCount = stats?.locked_count ?? jobs.filter((j) => j.locked).length;
 
   useEffect(() => {
     getMe().then(setUserInfo).catch(() => null);
     getSchedulerStatus().then(setSyncInfo).catch(() => null);
+    // Kick off scoring for any unscored jobs in the background
+    maybeScore().catch(() => null);
   }, []);
 
-  const handleManualSync = useCallback(async () => {
-    setSyncing(true);
-    try {
-      await triggerScheduler();
-      toast("Background sync started — jobs will appear shortly");
-      // Refresh sync info after a short delay
-      setTimeout(() => getSchedulerStatus().then(setSyncInfo).catch(() => null), 3000);
-    } catch {
-      toast("Sync failed", false);
-    } finally {
-      setSyncing(false);
-    }
-  }, [toast]);
+  const handleRefreshSyncInfo = useCallback(() => {
+    getSchedulerStatus().then(setSyncInfo).catch(() => null);
+  }, []);
 
   const handleUpgraded = useCallback(() => {
     getMe().then(setUserInfo).catch(() => null);
@@ -230,12 +226,11 @@ export default function JobsPage() {
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-void-subtle">Job pool</span>
             <button
-              onClick={handleManualSync}
-              disabled={syncing}
-              title="Sync now"
-              className="text-void-muted hover:text-void-accent disabled:opacity-40 transition-colors"
+              onClick={handleRefreshSyncInfo}
+              title="Check sync status"
+              className="text-void-muted hover:text-void-accent transition-colors"
             >
-              <svg viewBox="0 0 16 16" fill="currentColor" className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`}>
+              <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
                 <path fillRule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
                 <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
               </svg>
@@ -304,6 +299,24 @@ export default function JobsPage() {
             Refresh
           </button>
         </div>
+
+        {/* New-user setup prompt */}
+        {userInfo && !userInfo.has_profile && (
+          <div className="mx-6 mt-4 flex items-center gap-3 p-3 rounded-lg border border-void-accent/30 bg-void-accent/5">
+            <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5 text-void-accent shrink-0">
+              <path fillRule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-7-4a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM9 9a.75.75 0 0 0 0 1.5h.253a.25.25 0 0 1 .244.304l-.459 2.066A1.75 1.75 0 0 0 10.747 15H11a.75.75 0 0 0 0-1.5h-.253a.25.25 0 0 1-.244-.304l.459-2.066A1.75 1.75 0 0 0 9.253 9H9Z" clipRule="evenodd" />
+            </svg>
+            <p className="text-sm text-void-muted flex-1">
+              Complete your profile so jobs can be scored against your CV.
+            </p>
+            <a
+              href="/setup"
+              className="text-xs font-medium text-void-accent hover:underline shrink-0"
+            >
+              Set up now →
+            </a>
+          </div>
+        )}
 
         {/* Job grid */}
         <div className="flex-1 overflow-y-auto p-6">

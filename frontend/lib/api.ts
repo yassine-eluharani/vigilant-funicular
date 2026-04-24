@@ -5,7 +5,6 @@ import type {
   Task,
   Profile,
   SystemStatus,
-  AuthResponse,
   UserInfo,
 } from "./types";
 import { getToken, clearToken } from "./auth";
@@ -37,14 +36,6 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
-
-// ── Auth ──────────────────────────────────────────────────────────────────────
-
-export const login = (email: string, password: string): Promise<AuthResponse> =>
-  req("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
-
-export const registerUser = (full_name: string, email: string, password: string): Promise<AuthResponse> =>
-  req("/api/auth/register", { method: "POST", body: JSON.stringify({ full_name, email, password }) });
 
 // ── Stats ─────────────────────────────────────────────────────────────────────
 
@@ -124,6 +115,9 @@ export const runPipeline = (opts: PipelineRunOptions): Promise<{ task_id: string
 export const getTask = (taskId: string, since = 0): Promise<Task> =>
   req(`/api/tasks/${taskId}?since=${since}`);
 
+export const maybeScore = (): Promise<{ started: boolean; task_id?: string; reason?: string }> =>
+  req("/api/pipeline/maybe-score", { method: "POST" });
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 export const getProfile = (): Promise<Profile> => req("/api/profile");
@@ -171,24 +165,19 @@ export async function parseResumeCv(text: string): Promise<{ ok: boolean; extrac
 // ── User / Tier ───────────────────────────────────────────────────────────────
 
 export const getMe = (): Promise<UserInfo> => req("/api/auth/me");
-export const upgradeAccount = (): Promise<{ ok: boolean; tier: string }> =>
-  req("/api/auth/upgrade", { method: "POST" });
+
+/** Create a Stripe Checkout session and return the redirect URL. */
+export const createCheckoutSession = (): Promise<{ checkout_url: string }> =>
+  req("/api/stripe/create-checkout", { method: "POST" });
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 export const getSchedulerStatus = (): Promise<{ last_sync: string | null; jobs_found: number }> =>
   req("/api/scheduler/status");
-export const triggerScheduler = (): Promise<{ ok: boolean; task_id: string }> =>
-  req("/api/scheduler/trigger", { method: "POST" });
 
 // ── System ────────────────────────────────────────────────────────────────────
 
 export const getSystemStatus = (): Promise<SystemStatus> => req("/api/system/status");
-
-// ── Database ──────────────────────────────────────────────────────────────────
-
-export const purgeDatabase = (): Promise<{ deleted: number }> =>
-  req("/api/database", { method: "DELETE" });
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 

@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml .
 COPY src ./src
-RUN pip install --no-cache-dir -e ".[prod]"
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -e ".[prod]"
 
 # Install Playwright Chromium for PDF generation
 RUN playwright install chromium --with-deps
