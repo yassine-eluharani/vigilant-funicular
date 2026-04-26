@@ -53,7 +53,7 @@ def create_checkout(user: dict = Depends(get_current_user)) -> JSONResponse:
 
     try:
         session = stripe.checkout.Session.create(
-            mode="payment",
+            mode="subscription",
             line_items=[{"price": price_id, "quantity": 1}],
             success_url=success_url,
             cancel_url=cancel_url,
