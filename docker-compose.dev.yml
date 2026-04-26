@@ -6,6 +6,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
       target: development
+      args:
+        # Required for PDF generation (resume / cover letter downloads)
+        - INSTALL_PLAYWRIGHT=true
     command: uvicorn applypilot.web.server:app --reload --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"

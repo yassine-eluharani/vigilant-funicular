@@ -3,7 +3,8 @@
 import { useState, useCallback, useEffect } from "react";
 import type { Job } from "@/lib/types";
 import { ScoreBadge } from "./ScoreBadge";
-import { coverUrl, resumeUrl, tailorJob, coverJob, favoriteJob, getTask } from "@/lib/api";
+import { downloadCover, downloadResume, tailorJob, coverJob, favoriteJob, getTask } from "@/lib/api";
+import { useToast } from "@/components/ui/Toast";
 
 interface JobCardProps {
   job: Job;
@@ -54,6 +55,7 @@ function Spinner() {
 }
 
 export function JobCard({ job, onSelect, onDismiss, onMarkApplied, onRefresh, onUpgrade }: JobCardProps) {
+  const toast = useToast();
   const [tailoring, setTailoring] = useState(false);
   const [covering, setCovering] = useState(false);
   const [confirmApplied, setConfirmApplied] = useState(false);
@@ -210,30 +212,28 @@ export function JobCard({ job, onSelect, onDismiss, onMarkApplied, onRefresh, on
       >
         {/* PDF download links */}
         {job.has_pdf && (
-          <a
-            href={resumeUrl(job.url_encoded)}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            type="button"
+            onClick={() => downloadResume(job.url_encoded, job.title).catch((e) => toast(e?.message || "Download failed", false))}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-void-raised border border-void-border text-xs text-void-muted hover:text-void-text hover:border-void-accent/40 transition-colors"
           >
             <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
               <path d="M4 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6.414A2 2 0 0 0 13.414 5L10 1.586A2 2 0 0 0 8.586 1H4Zm3.5 7a.5.5 0 0 1 .5.5v2.293l.646-.647a.5.5 0 0 1 .708.708l-1.5 1.5a.5.5 0 0 1-.708 0l-1.5-1.5a.5.5 0 0 1 .708-.708l.646.647V8.5a.5.5 0 0 1 .5-.5Z" />
             </svg>
             Resume
-          </a>
+          </button>
         )}
         {job.has_cover_pdf && (
-          <a
-            href={coverUrl(job.url_encoded)}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            type="button"
+            onClick={() => downloadCover(job.url_encoded, job.title).catch((e) => toast(e?.message || "Download failed", false))}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-void-raised border border-void-border text-xs text-void-muted hover:text-void-text hover:border-void-accent/40 transition-colors"
           >
             <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
               <path d="M4 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V6.414A2 2 0 0 0 13.414 5L10 1.586A2 2 0 0 0 8.586 1H4ZM5 8.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5Zm0 2a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5ZM5.5 5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1 0-1Z" />
             </svg>
             Cover
-          </a>
+          </button>
         )}
 
         {/* View / Apply links */}

@@ -488,11 +488,14 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
     added = []
 
     for col, dtype in _ALL_COLUMNS.items():
-        if col not in existing:
-            if "PRIMARY KEY" in dtype:
-                continue
+        if col in existing or "PRIMARY KEY" in dtype:
+            continue
+        try:
             conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {dtype}")
             added.append(col)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
     if added:
         conn.commit()
@@ -510,6 +513,8 @@ _USER_EXTRA_COLUMNS: dict[str, str] = {
     "profile_json": "TEXT",
     "resume_text": "TEXT",
     "email_notifications": "INTEGER DEFAULT 0",
+    "stripe_customer_id": "TEXT",
+    "stripe_subscription_id": "TEXT",
 }
 
 _USER_JOBS_COLUMNS: dict[str, str] = {
@@ -539,18 +544,42 @@ def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
         conn = get_connection()
     existing = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
     for col, dtype in _USER_EXTRA_COLUMNS.items():
-        if col not in existing:
+        if col in existing:
+            continue
+        try:
             conn.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
+        except sqlite3.OperationalError as e:
+            # Race / stale view: column was added between PRAGMA check and ALTER.
+            # Treat "duplicate column" as a no-op so startup is idempotent.
+            if "duplicate column" not in str(e).lower():
+                raise
     conn.commit()
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id)"
     )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_stripe_subscription_id "
+        "ON users(stripe_subscription_id)"
+    )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS stripe_processed_events (
+            event_id     TEXT PRIMARY KEY,
+            event_type   TEXT,
+            processed_at TEXT NOT NULL
+        )
+    """)
+    conn.commit()
 
     # Ensure user_jobs table exists and has all columns
     uj_existing = {row[1] for row in conn.execute("PRAGMA table_info(user_jobs)").fetchall()}
     for col, dtype in _USER_JOBS_COLUMNS.items():
-        if col not in uj_existing:
+        if col in uj_existing:
+            continue
+        try:
             conn.execute(f"ALTER TABLE user_jobs ADD COLUMN {col} {dtype}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     conn.commit()
 
 

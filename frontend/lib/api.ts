@@ -172,6 +172,9 @@ export const getMe = (): Promise<UserInfo> => req("/api/auth/me");
 export const createCheckoutSession = (): Promise<{ checkout_url: string }> =>
   req("/api/stripe/create-checkout", { method: "POST" });
 
+export const createBillingPortalSession = (): Promise<{ portal_url: string }> =>
+  req("/api/stripe/billing-portal", { method: "POST" });
+
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 export const getSchedulerStatus = (): Promise<{ last_sync: string | null; jobs_found: number }> =>
@@ -183,7 +186,54 @@ export const getSystemStatus = (): Promise<SystemStatus> => req("/api/system/sta
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
 
-export const resumeUrl        = (encodedUrl: string) => `${BASE}/api/resume/${encodedUrl}`;
-export const coverUrl         = (encodedUrl: string) => `${BASE}/api/cover-letter/${encodedUrl}`;
 export const sseTaskUrl       = (taskId: string)     => `${BASE}/api/stream/task/${taskId}`;
 export const sseUserEventsUrl = (token: string)      => `${BASE}/api/stream/user/events?token=${encodeURIComponent(token)}`;
+
+// ── Authenticated file downloads ──────────────────────────────────────────────
+// Plain <a href> can't carry the Authorization header, so the server returns 401.
+// Fetch the file as a blob with the JWT, then trigger a download via object URL.
+
+async function fetchFileBlob(path: string): Promise<Blob> {
+  const token = await getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (res.status === 401) {
+    clearToken();
+    if (typeof window !== "undefined") window.location.href = "/login";
+    throw new Error("Unauthorized");
+  }
+  if (!res.ok) {
+    const err = await res.text().catch(() => res.statusText);
+    throw new Error(err || `HTTP ${res.status}`);
+  }
+  return res.blob();
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Defer revoke so the browser has time to start the download
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function safeFilename(s: string): string {
+  return s.replace(/[^a-z0-9-_]+/gi, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "file";
+}
+
+export async function downloadResume(encodedUrl: string, jobTitle?: string): Promise<void> {
+  const blob = await fetchFileBlob(`/api/resume/${encodedUrl}`);
+  const name = jobTitle ? `resume-${safeFilename(jobTitle)}.pdf` : "resume.pdf";
+  triggerBlobDownload(blob, name);
+}
+
+export async function downloadCover(encodedUrl: string, jobTitle?: string): Promise<void> {
+  const blob = await fetchFileBlob(`/api/cover-letter/${encodedUrl}`);
+  const name = jobTitle ? `cover-${safeFilename(jobTitle)}.pdf` : "cover-letter.pdf";
+  triggerBlobDownload(blob, name);
+}

@@ -282,10 +282,14 @@ def serve_resume(encoded_url: str, user: dict = Depends(get_current_user)) -> Re
     try:
         from applypilot.scoring.pdf import text_to_pdf_bytes
         pdf_bytes = text_to_pdf_bytes(text)
-        return Response(content=pdf_bytes, media_type="application/pdf",
-                        headers={"Content-Disposition": "inline; filename=resume.pdf"})
-    except Exception:
-        return Response(content=text, media_type="text/plain")
+    except Exception as e:
+        # Don't silently return text/plain — the browser saves whatever blob it
+        # gets as a .pdf, producing an unopenable file. Surface the failure.
+        log = __import__("logging").getLogger(__name__)
+        log.exception("PDF generation failed for resume: %s", e)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": "inline; filename=resume.pdf"})
 
 
 @router.get("/api/cover-letter/{encoded_url}")
@@ -302,10 +306,12 @@ def serve_cover_letter(encoded_url: str, user: dict = Depends(get_current_user))
     try:
         from applypilot.scoring.pdf import text_to_pdf_bytes
         pdf_bytes = text_to_pdf_bytes(text)
-        return Response(content=pdf_bytes, media_type="application/pdf",
-                        headers={"Content-Disposition": "inline; filename=cover_letter.pdf"})
-    except Exception:
-        return Response(content=text, media_type="text/plain")
+    except Exception as e:
+        log = __import__("logging").getLogger(__name__)
+        log.exception("PDF generation failed for cover letter: %s", e)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+    return Response(content=pdf_bytes, media_type="application/pdf",
+                    headers={"Content-Disposition": "inline; filename=cover_letter.pdf"})
 
 
 # ---------------------------------------------------------------------------

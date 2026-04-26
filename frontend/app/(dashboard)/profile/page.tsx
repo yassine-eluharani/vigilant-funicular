@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { getProfile, updateProfile, getSearches, updateSearches, getEmployers, updateEmployers, getResumeText, updateResumeText, uploadResumePdf } from "@/lib/api";
+import { getProfile, updateProfile, getSearches, updateSearches, getEmployers, updateEmployers, getResumeText, updateResumeText, uploadResumePdf, getMe, createCheckoutSession, createBillingPortalSession } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
-import type { Profile } from "@/lib/types";
+import type { Profile, UserInfo } from "@/lib/types";
 
-type Tab = "profile" | "searches" | "employers" | "resume";
+type Tab = "profile" | "searches" | "employers" | "resume" | "billing";
 
 // ── Profile tab ───────────────────────────────────────────────────────────────
 
@@ -563,6 +563,166 @@ function Field({ label, value, onChange, type = "text" }: { label: string; value
   );
 }
 
+// ── Billing tab ───────────────────────────────────────────────────────────────
+
+function BillingTab() {
+  const toast = useToast();
+  const [me, setMe] = useState<UserInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getMe().then(setMe).catch(() => null).finally(() => setLoading(false));
+  }, []);
+
+  const handleManage = async () => {
+    setBusy(true);
+    try {
+      const { portal_url } = await createBillingPortalSession();
+      window.location.href = portal_url;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast(msg || "Couldn't open billing portal", false);
+      setBusy(false);
+    }
+  };
+
+  const handleUpgrade = async () => {
+    setBusy(true);
+    try {
+      const { checkout_url } = await createCheckoutSession();
+      window.location.href = checkout_url;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast(msg || "Upgrade failed", false);
+      setBusy(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="p-6 text-sm text-void-muted">Loading…</div>;
+  }
+  if (!me) {
+    return <div className="p-6 text-sm text-void-muted">Couldn't load account info.</div>;
+  }
+
+  const isPro = me.tier === "pro";
+
+  return (
+    <div className="p-6 max-w-2xl space-y-6">
+      {/* Plan card */}
+      <div className={`rounded-xl border p-5 ${
+        isPro
+          ? "bg-gradient-to-br from-amber-500/10 to-transparent border-amber-500/30"
+          : "bg-void-surface border-void-border"
+      }`}>
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <p className="text-xs uppercase tracking-wider text-void-subtle mb-1">Current plan</p>
+            <p className={`text-2xl font-semibold ${isPro ? "text-amber-300" : "text-void-text"}`}>
+              {isPro ? "Pro" : "Free"}
+            </p>
+          </div>
+          {isPro && (
+            <span className="px-2 py-1 rounded-full bg-amber-500/15 border border-amber-500/30 text-xs text-amber-300 font-medium">
+              Active
+            </span>
+          )}
+        </div>
+
+        {isPro ? (
+          <ul className="space-y-1.5 text-sm text-void-text">
+            <li>· Unlimited tailored resumes</li>
+            <li>· Unlimited cover letters</li>
+            <li>· All high-match jobs visible</li>
+            <li>· PDF export</li>
+          </ul>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm text-void-muted">
+              You're on the free plan: <span className="text-void-text">3 tailored resumes</span> and{" "}
+              <span className="text-void-text">1 cover letter</span> per month.
+            </p>
+            <p className="text-sm text-void-muted">
+              Upgrade to remove limits and unlock all high-match jobs.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Usage */}
+      {me.tailor_limit != null && (
+        <div className="rounded-xl border border-void-border bg-void-surface p-5">
+          <p className="text-sm font-medium text-void-text mb-3">This month's usage</p>
+          <div className="grid grid-cols-2 gap-4">
+            <UsageStat
+              label="Tailored resumes"
+              used={me.tailors_used}
+              limit={me.tailor_limit}
+              isPro={isPro}
+            />
+            <UsageStat
+              label="Cover letters"
+              used={me.covers_used}
+              limit={me.cover_limit ?? 1}
+              isPro={isPro}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="flex flex-col gap-2">
+        {isPro ? (
+          <>
+            <button
+              onClick={handleManage}
+              disabled={busy}
+              className="w-full py-3 rounded-lg bg-void-raised border border-void-border text-sm font-medium text-void-text hover:border-void-accent/40 disabled:opacity-50 transition-colors"
+            >
+              {busy ? "Opening…" : "Manage subscription"}
+            </button>
+            <p className="text-xs text-void-subtle text-center">
+              Cancel, update your card, or download invoices in Stripe's secure portal.
+            </p>
+          </>
+        ) : (
+          <button
+            onClick={handleUpgrade}
+            disabled={busy}
+            className="w-full py-3 rounded-lg bg-amber-500 text-black text-sm font-semibold hover:bg-amber-400 disabled:opacity-50 transition-colors"
+          >
+            {busy ? "Redirecting…" : "Upgrade to Pro — $19/mo"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UsageStat({ label, used, limit, isPro }: { label: string; used: number; limit: number; isPro: boolean }) {
+  const pct = isPro ? 0 : Math.min(100, Math.round((used / Math.max(limit, 1)) * 100));
+  return (
+    <div>
+      <div className="flex justify-between items-baseline mb-1.5">
+        <span className="text-xs text-void-muted">{label}</span>
+        <span className="text-sm font-mono text-void-text">
+          {used}
+          <span className="text-void-subtle"> / {isPro ? "∞" : limit}</span>
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-void-raised overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${
+            isPro ? "bg-amber-400" : used >= limit ? "bg-void-danger" : "bg-void-accent"
+          }`}
+          style={{ width: isPro ? "100%" : `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 const TABS: { id: Tab; label: string }[] = [
@@ -570,10 +730,18 @@ const TABS: { id: Tab; label: string }[] = [
   { id: "searches",  label: "Searches" },
   { id: "employers", label: "Employers" },
   { id: "resume",    label: "Resume" },
+  { id: "billing",   label: "Billing" },
 ];
 
 export default function ProfilePage() {
-  const [tab, setTab] = useState<Tab>("profile");
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window === "undefined") return "profile";
+    const t = new URLSearchParams(window.location.search).get("tab");
+    if (t === "billing" || t === "profile" || t === "searches" || t === "employers" || t === "resume") {
+      return t;
+    }
+    return "profile";
+  });
 
   return (
     <div className="flex flex-col h-full">
@@ -605,6 +773,7 @@ export default function ProfilePage() {
         {tab === "searches"  && <SearchesTab />}
         {tab === "employers" && <EmployersTab />}
         {tab === "resume"    && <ResumeTab />}
+        {tab === "billing"   && <BillingTab />}
       </div>
     </div>
   );

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
 import { JobCard } from "@/components/jobs/JobCard";
 import { JobFilters, type Filters } from "@/components/jobs/JobFilters";
 import { JobDetailDrawer } from "@/components/jobs/JobDetailDrawer";
+import { ProWelcomeModal } from "@/components/jobs/ProWelcomeModal";
 import { useJobs } from "@/lib/hooks/useJobs";
 import { useStats } from "@/lib/hooks/useStats";
 import { dismissJob, markApplied, getMe, createCheckoutSession, getSchedulerStatus, maybeScore } from "@/lib/api";
@@ -128,6 +130,11 @@ function SkeletonCard() {
 
 export default function JobsPage() {
   const toast = useToast();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const upgradedFlag = searchParams.get("upgraded") === "true";
+  const [showProWelcome, setShowProWelcome] = useState(false);
   const [filters, setFiltersRaw] = useState<Filters>(DEFAULT_FILTERS);
   const setFilters = useCallback((f: Filters) => {
     // When switching to "scored", drop minScore to 1 so user sees everything
@@ -157,6 +164,49 @@ export default function JobsPage() {
     // Kick off scoring for any unscored jobs in the background
     maybeScore().catch(() => null);
   }, []);
+
+  // Detect ?upgraded=true → poll /api/auth/me until tier flips to pro
+  // (webhook may take a moment to land), then show the celebration modal.
+  useEffect(() => {
+    if (!upgradedFlag) return;
+    let attempts = 0;
+    let cancelled = false;
+
+    const tick = async () => {
+      attempts += 1;
+      try {
+        const me = await getMe();
+        if (cancelled) return;
+        setUserInfo(me);
+        if (me.tier === "pro") {
+          setShowProWelcome(true);
+          refresh();
+          return;
+        }
+      } catch { /* keep polling */ }
+      if (attempts < 10 && !cancelled) {
+        setTimeout(tick, 1000);
+      } else if (!cancelled) {
+        // Webhook never landed — surface a fallback toast
+        toast("Payment received but upgrade is still processing. Refresh in a moment.", false);
+      }
+    };
+    tick();
+
+    return () => { cancelled = true; };
+  }, [upgradedFlag, refresh, toast]);
+
+  const handleCloseProWelcome = useCallback(() => {
+    setShowProWelcome(false);
+    // Clean the ?upgraded=true off the URL so a refresh doesn't re-trigger
+    router.replace(pathname);
+  }, [router, pathname]);
+
+  const handleSeeMatches = useCallback(() => {
+    setShowProWelcome(false);
+    router.replace(pathname);
+    setFiltersRaw({ ...DEFAULT_FILTERS, minScore: 8 });
+  }, [router, pathname]);
 
   const handleRefreshSyncInfo = useCallback(() => {
     getSchedulerStatus().then(setSyncInfo).catch(() => null);
@@ -203,6 +253,14 @@ export default function JobsPage() {
 
   return (
     <>
+    {showProWelcome && (
+      <ProWelcomeModal
+        stats={stats}
+        userInfo={userInfo}
+        onClose={handleCloseProWelcome}
+        onSeeMatches={handleSeeMatches}
+      />
+    )}
     {showUpgrade && (
       <UpgradeModal
         lockedCount={lockedCount}

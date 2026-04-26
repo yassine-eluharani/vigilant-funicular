@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import type { Job } from "@/lib/types";
 import { ScoreBadge } from "./ScoreBadge";
-import { getJob, saveResume, dismissJob, restoreJob, markApplied, markStatus, resumeUrl, coverUrl, tailorJob, coverJob, favoriteJob } from "@/lib/api";
+import { getJob, saveResume, dismissJob, restoreJob, markApplied, markStatus, downloadResume, downloadCover, tailorJob, coverJob, favoriteJob } from "@/lib/api";
 import { useTaskProgress } from "@/lib/hooks/useTaskProgress";
 import { useToast } from "@/components/ui/Toast";
 
@@ -392,16 +392,20 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
               </a>
             )}
             {job.has_pdf && (
-              <a href={resumeUrl(job.url_encoded)} target="_blank" rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => downloadResume(job.url_encoded, job.title).catch((e) => toast(e?.message || "Download failed", false))}
                 className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors">
                 Download PDF
-              </a>
+              </button>
             )}
             {job.has_cover_pdf && (
-              <a href={coverUrl(job.url_encoded)} target="_blank" rel="noopener noreferrer"
+              <button
+                type="button"
+                onClick={() => downloadCover(job.url_encoded, job.title).catch((e) => toast(e?.message || "Download failed", false))}
                 className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors">
                 Cover PDF
-              </a>
+              </button>
             )}
 
             <div className="ml-auto flex items-center gap-2">
