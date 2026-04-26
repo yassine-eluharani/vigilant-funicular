@@ -17,6 +17,10 @@ const jetbrainsMono = JetBrains_Mono({
   display: "swap",
 });
 
+// Force all pages to render at request time so Clerk's publishableKey check
+// doesn't fire during `npm run build` (key is only available at runtime in prod).
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "ApplyPilot — AI-Powered Job Applications",
   description: "Discover, score, tailor, and auto-submit job applications with AI. Apply to 100+ jobs overnight.",

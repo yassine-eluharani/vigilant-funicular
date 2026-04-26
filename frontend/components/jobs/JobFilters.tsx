@@ -17,11 +17,12 @@ interface JobFiltersProps {
 }
 
 const STATUSES = [
-  { value: "pending",   label: "Pending" },
-  { value: "favorites", label: "⭐ Favorites" },
-  { value: "ready",     label: "Ready to Apply" },
-  { value: "applied",   label: "Applied" },
-  { value: "dismissed", label: "Dismissed" },
+  { value: "scored",     label: "All Scored" },
+  { value: "pending",    label: "Pending" },
+  { value: "favorites",  label: "Favorites" },
+  { value: "ready",      label: "Ready to Apply" },
+  { value: "applied",    label: "Applied" },
+  { value: "dismissed",  label: "Dismissed" },
   { value: "untailored", label: "Untailored" },
 ];
 

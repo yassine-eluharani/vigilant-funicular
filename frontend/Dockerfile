@@ -19,11 +19,12 @@ FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
-# NEXT_PUBLIC_* vars must be present at build time — they get baked into the JS bundle
+# NEXT_PUBLIC_* vars are baked into the JS bundle at build time
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# BACKEND_URL is used by next.config.ts rewrites, which are also evaluated at build time
+ARG BACKEND_URL=http://backend:8000
+ENV BACKEND_URL=$BACKEND_URL
 RUN npm run build
 
 # ── Production stage ──────────────────────────────────────────────────────────

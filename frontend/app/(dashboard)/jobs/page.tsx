@@ -41,7 +41,7 @@ function UpgradeModal({
       window.location.href = checkout_url;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      toast(msg.includes("503") ? "Payments not configured — contact support." : "Upgrade failed. Please try again.", "error");
+      toast(msg.includes("503") ? "Payments not configured — contact support." : "Upgrade failed. Please try again.", false);
     } finally {
       setLoading(false);
     }
@@ -128,7 +128,18 @@ function SkeletonCard() {
 
 export default function JobsPage() {
   const toast = useToast();
-  const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
+  const [filters, setFiltersRaw] = useState<Filters>(DEFAULT_FILTERS);
+  const setFilters = useCallback((f: Filters) => {
+    // When switching to "scored", drop minScore to 1 so user sees everything
+    if (f.status === "scored" && filters.status !== "scored") {
+      setFiltersRaw({ ...f, minScore: 1 });
+    } else if (f.status !== "scored" && filters.status === "scored" && f.minScore === 1) {
+      // Switching away from "scored", restore default minScore
+      setFiltersRaw({ ...f, minScore: DEFAULT_FILTERS.minScore });
+    } else {
+      setFiltersRaw(f);
+    }
+  }, [filters.status]);
   const [selectedUrl, setSelectedUrl] = useState<string | null>(null);
   const [showUpgrade, setShowUpgrade] = useState(false);
   const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
@@ -207,10 +218,10 @@ export default function JobsPage() {
           <div className="px-4 pt-4 pb-2 border-b border-void-border">
             <div className="grid grid-cols-2 gap-2">
               {[
+                { label: "Scored",    value: stats.funnel.scored },
                 { label: "Tailored",  value: stats.tailored  },
                 { label: "Applied",   value: stats.applied   },
                 { label: "Ready",     value: stats.ready_to_apply },
-                { label: "Dismissed", value: stats.dismissed },
               ].map(({ label, value }) => (
                 <div key={label} className="bg-void-raised rounded-lg px-2 py-2 text-center border border-void-border">
                   <p className="text-lg font-semibold font-mono text-void-text">{value}</p>
@@ -330,7 +341,15 @@ export default function JobsPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
               </svg>
               <p className="text-sm">No jobs match your filters</p>
-              <button onClick={() => setFilters(DEFAULT_FILTERS)} className="text-xs text-void-accent mt-2 hover:underline">
+              {stats && stats.funnel.scored > 0 && filters.status !== "scored" && (
+                <button
+                  onClick={() => setFilters({ ...filters, status: "scored", minScore: 1 })}
+                  className="text-xs text-void-accent mt-2 hover:underline"
+                >
+                  View all {stats.funnel.scored} scored jobs instead
+                </button>
+              )}
+              <button onClick={() => setFiltersRaw(DEFAULT_FILTERS)} className="text-xs text-void-accent mt-2 hover:underline">
                 Reset filters
               </button>
             </div>

@@ -5,6 +5,7 @@ pipeline stage are created up front so any stage can run independently
 without migration ordering issues.
 """
 
+import logging
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -546,14 +547,11 @@ def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
     )
 
     # Ensure user_jobs table exists and has all columns
-    try:
-        uj_existing = {row[1] for row in conn.execute("PRAGMA table_info(user_jobs)").fetchall()}
-        for col, dtype in _USER_JOBS_COLUMNS.items():
-            if col not in uj_existing:
-                conn.execute(f"ALTER TABLE user_jobs ADD COLUMN {col} {dtype}")
-        conn.commit()
-    except Exception:
-        pass  # Table might not exist yet — init_db() creates it
+    uj_existing = {row[1] for row in conn.execute("PRAGMA table_info(user_jobs)").fetchall()}
+    for col, dtype in _USER_JOBS_COLUMNS.items():
+        if col not in uj_existing:
+            conn.execute(f"ALTER TABLE user_jobs ADD COLUMN {col} {dtype}")
+    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -570,27 +568,27 @@ def get_user_job(conn: sqlite3.Connection, user_id: int, job_url: str) -> dict |
 
 
 def upsert_user_job(conn: sqlite3.Connection, user_id: int, job_url: str, **fields) -> None:
-    """Insert or update a user_jobs row with the given fields."""
-    if not fields:
-        # Ensure the row exists with defaults
+    """Insert or update a user_jobs row with the given fields.
+
+    Single-statement INSERT ... ON CONFLICT DO UPDATE — one HTTP round trip to Turso
+    instead of two (INSERT OR IGNORE + UPDATE). Only the supplied fields are updated;
+    existing columns (e.g. notes, favorited) are preserved.
+    """
+    if fields:
+        cols = ["user_id", "job_url", *fields.keys()]
+        placeholders = ", ".join("?" for _ in cols)
+        col_names = ", ".join(cols)
+        set_clause = ", ".join(f"{k} = excluded.{k}" for k in fields)
+        conn.execute(
+            f"INSERT INTO user_jobs ({col_names}) VALUES ({placeholders}) "
+            f"ON CONFLICT(user_id, job_url) DO UPDATE SET {set_clause}",
+            [user_id, job_url, *fields.values()],
+        )
+    else:
         conn.execute(
             "INSERT OR IGNORE INTO user_jobs (user_id, job_url) VALUES (?, ?)",
             (user_id, job_url),
         )
-        conn.commit()
-        return
-
-    set_clause = ", ".join(f"{k} = ?" for k in fields)
-    values = list(fields.values())
-
-    conn.execute(
-        "INSERT OR IGNORE INTO user_jobs (user_id, job_url) VALUES (?, ?)",
-        (user_id, job_url),
-    )
-    conn.execute(
-        f"UPDATE user_jobs SET {set_clause} WHERE user_id = ? AND job_url = ?",
-        values + [user_id, job_url],
-    )
     conn.commit()
 
 
@@ -605,12 +603,17 @@ def batch_upsert_scores(
     On Turso: all upserts are sent in chunked batch HTTP calls.
     On local SQLite: falls back to sequential upsert (no HTTP overhead anyway).
 
+    Uses INSERT ... SELECT WHERE EXISTS to avoid FOREIGN KEY violations when a
+    job was deleted between the scoring SELECT and the score write-back.
+
     Args:
         conn: Active DB connection.
         user_id: The user these scores belong to.
         results: List of dicts with keys: url, score, keywords, reasoning.
         now: ISO timestamp string for scored_at.
     """
+    log = logging.getLogger(__name__)
+
     if isinstance(conn, _TursoConnection):
         stmts: list[tuple[str, tuple]] = []
         for r in results:
@@ -623,7 +626,24 @@ def batch_upsert_scores(
                 "WHERE user_id = ? AND job_url = ?",
                 (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, user_id, r["url"]),
             ))
-        conn.execute_batch(stmts)
+        try:
+            conn.execute_batch(stmts)
+        except Exception as e:
+            # Batch failed — fall back to individual writes so partial results are saved
+            log.warning("Batch score write failed: %s — falling back to individual writes", e)
+            saved = 0
+            for r in results:
+                try:
+                    upsert_user_job(
+                        conn, user_id, r["url"],
+                        fit_score=r["score"],
+                        score_reasoning=f"{r['keywords']}\n{r['reasoning']}",
+                        scored_at=now,
+                    )
+                    saved += 1
+                except Exception:
+                    pass
+            log.info("Individual fallback: %d/%d scores saved", saved, len(results))
     else:
         for r in results:
             upsert_user_job(
@@ -981,7 +1001,10 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
             "enriched": "j.full_description IS NOT NULL",
             "pending_score": (
                 "j.full_description IS NOT NULL "
-                "AND (uj.fit_score IS NULL OR uj.user_id IS NULL)"
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM user_jobs uj2 "
+                "  WHERE uj2.job_url = j.url AND uj2.user_id = ? AND uj2.fit_score IS NOT NULL"
+                ")"
             ),
             "scored": "uj.fit_score IS NOT NULL",
             "pending_tailor": (
@@ -996,8 +1019,11 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
             "applied": "uj.applied_at IS NOT NULL",
         }
         where = conditions.get(stage, "1=1")
-        params: list = [user_id]
-        if "?" in where and min_score is not None:
+        params: list = [user_id]  # for the LEFT JOIN uj.user_id = ?
+        if stage == "pending_score":
+            # NOT EXISTS subquery needs its own user_id param (after LEFT JOIN param)
+            params.append(user_id)
+        elif "?" in where and min_score is not None:
             params.insert(0, min_score)
         elif "?" in where:
             params.insert(0, 7)
@@ -1051,7 +1077,4 @@ def get_jobs_by_stage(conn: sqlite3.Connection | None = None,
 
     rows = conn.execute(query, params).fetchall()
 
-    if rows:
-        columns = rows[0].keys()
-        return [dict(zip(columns, row)) for row in rows]
-    return []
+    return [dict(row) for row in rows] if rows else []

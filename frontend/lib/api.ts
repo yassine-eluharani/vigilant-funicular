@@ -10,9 +10,11 @@ import type {
 import { getToken, clearToken } from "./auth";
 
 // Use NEXT_PUBLIC_API_URL in browser, fallback to relative for SSR behind nginx
+// Browser: empty string = relative URLs, proxied by Next.js rewrites to backend.
+// Server-side (SSR/API routes): direct container-to-container URL.
 const BASE =
   typeof window !== "undefined"
-    ? (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000")
+    ? (process.env.NEXT_PUBLIC_API_URL ?? "")
     : (process.env.API_URL ?? "http://backend:8000");
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -109,7 +111,7 @@ export interface PipelineRunOptions {
   stream?: boolean;
 }
 
-export const runPipeline = (opts: PipelineRunOptions): Promise<{ task_id: string }> =>
+export const runPipeline = (opts: PipelineRunOptions): Promise<{ task_id: string; skipped?: boolean }> =>
   req("/api/pipeline/run", { method: "POST", body: JSON.stringify(opts) });
 
 export const getTask = (taskId: string, since = 0): Promise<Task> =>

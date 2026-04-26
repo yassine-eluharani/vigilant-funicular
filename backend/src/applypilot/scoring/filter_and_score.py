@@ -182,8 +182,7 @@ def run_two_phase_scoring(
         log.info("No unscored jobs with metadata for user %d.", user_id)
         return {"pre_filtered": 0, "heuristic_only": 0, "llm_scored": 0, "errors": 0}
 
-    cols = rows[0].keys()
-    jobs = [dict(zip(cols, r)) for r in rows]
+    jobs = [dict(r) for r in rows]
     log.info("Two-phase scoring: %d candidate jobs for user %d", len(jobs), user_id)
 
     # Phase 1: Rule-based pre-filter

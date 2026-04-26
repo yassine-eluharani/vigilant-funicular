@@ -27,11 +27,17 @@ STAGE_META: dict[str, dict] = {
 
 
 def _run_score(user_id: int | None = None) -> dict:
-    """Stage: LLM scoring — assign fit scores 1-10."""
+    """Stage: two-phase scoring — rule pre-filter + heuristic rank + top-N LLM.
+
+    Cuts per-user LLM cost from O(jobs) to O(top_N=100) by reusing the
+    per-job metadata indexed once by the discovery worker.
+    """
+    if user_id is None:
+        return {"status": "error: user_id required for two-phase scoring"}
     try:
-        from applypilot.scoring.scorer import run_scoring
-        run_scoring(user_id=user_id)
-        return {"status": "ok"}
+        from applypilot.scoring.filter_and_score import run_two_phase_scoring
+        result = run_two_phase_scoring(user_id=user_id)
+        return {"status": "ok", **result}
     except Exception as e:
         log.error("Scoring failed: %s", e)
         return {"status": f"error: {e}"}

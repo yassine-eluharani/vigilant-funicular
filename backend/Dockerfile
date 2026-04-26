@@ -20,8 +20,10 @@ RUN if [ "$INSTALL_PLAYWRIGHT" = "true" ]; then \
 # ── Development stage ─────────────────────────────────────────────────────────
 FROM base AS development
 ENV PYTHONDONTWRITEBYTECODE=1
+CMD ["uvicorn", "applypilot.web.server:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # ── Production stage ──────────────────────────────────────────────────────────
 FROM base AS production
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONOPTIMIZE=1
+CMD ["uvicorn", "applypilot.web.server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

@@ -18,6 +18,9 @@ classifiers = [
 
 dependencies = [
     "httpx>=0.24",
+    "sqlmodel>=0.0.16",
+    "sqlalchemy>=2.0.30",
+    "alembic>=1.13",
     "python-jobspy>=1.1",
     "beautifulsoup4>=4.12",
     "playwright>=1.40",

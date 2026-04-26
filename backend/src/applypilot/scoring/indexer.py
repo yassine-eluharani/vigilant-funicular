@@ -114,8 +114,7 @@ def run_indexing(limit: int = 0) -> dict:
         log.info("No jobs pending indexing.")
         return {"indexed": 0, "errors": 0, "elapsed": 0.0}
 
-    cols = rows[0].keys()
-    jobs = [dict(zip(cols, r)) for r in rows]
+    jobs = [dict(r) for r in rows]
 
     log.info("Indexing metadata for %d jobs...", len(jobs))
     t0 = time.time()

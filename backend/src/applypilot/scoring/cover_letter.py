@@ -240,10 +240,7 @@ def run_cover_letters(
         log.info("No jobs needing cover letters (score >= %d).", min_score)
         return {"generated": 0, "errors": 0, "elapsed": 0.0}
 
-    # Convert rows to dicts
-    if jobs and not isinstance(jobs[0], dict):
-        columns = jobs[0].keys()
-        jobs = [dict(zip(columns, row)) for row in jobs]
+    jobs = [dict(row) if not isinstance(row, dict) else row for row in jobs]
 
     if user_id is not None:
         from applypilot.config import APP_DIR

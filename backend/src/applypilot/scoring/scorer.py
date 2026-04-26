@@ -135,7 +135,15 @@ def score_job(resume_text: str, job: dict, score_prompt: str) -> dict:
     try:
         client = get_client()
         response = client.chat(messages, max_tokens=512, temperature=0.2)
-        return _parse_score_response(response)
+        result = _parse_score_response(response)
+        if result["score"] <= 2:
+            log.debug(
+                "LOW SCORE DEBUG — title=%s, location=%s, score=%d, "
+                "reasoning=%s, raw_response=%s",
+                job.get("title", "?"), job.get("location", "?"),
+                result["score"], result["reasoning"], response[:500],
+            )
+        return result
     except Exception as e:
         log.error("LLM error scoring job '%s': %s", job.get("title", "?"), e)
         return {"score": 0, "keywords": "", "reasoning": f"LLM error: {e}"}
@@ -164,9 +172,23 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
              profile.get("personal", {}).get("city", "?"),
              profile.get("personal", {}).get("country", "?"),
              profile.get("work_authorization", {}).get("require_sponsorship", "?"))
+    log.info("Score prompt (system message):\n%s", score_prompt)
+    log.info("Resume preview (first 300 chars): %s", resume_text[:300] if resume_text else "EMPTY")
+
+    # Pre-scoring state check — how many scores already exist?
+    if user_id is not None:
+        already_scored = conn.execute(
+            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND fit_score IS NOT NULL",
+            (user_id,),
+        ).fetchone()[0]
+        total_with_desc = conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE full_description IS NOT NULL", ()
+        ).fetchone()[0]
+        log.info("Score state — user_id=%s, already_scored=%d, total_with_description=%d",
+                 user_id, already_scored, total_with_desc)
 
     if not resume_text.strip():
-        log.warning("⚠ Resume text is EMPTY for user %s — scores will be meaningless. "
+        log.warning("Resume text is EMPTY for user %s — scores will be meaningless. "
                     "User must save a resume via Profile or Setup.", user_id)
 
     if user_id is not None:
@@ -177,11 +199,7 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
             if limit > 0:
                 query += f" LIMIT {limit}"
             rows = conn.execute(query).fetchall()
-            if rows:
-                cols = rows[0].keys()
-                jobs = [dict(zip(cols, r)) for r in rows]
-            else:
-                jobs = []
+            jobs = [dict(r) for r in rows]
         else:
             jobs = get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit, user_id=user_id)
     else:
@@ -190,11 +208,7 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
             if limit > 0:
                 query += f" LIMIT {limit}"
             rows = conn.execute(query).fetchall()
-            if rows:
-                cols = rows[0].keys()
-                jobs = [dict(zip(cols, r)) for r in rows]
-            else:
-                jobs = []
+            jobs = [dict(r) for r in rows]
         else:
             jobs = get_jobs_by_stage(conn=conn, stage="pending_score", limit=limit)
 
@@ -202,11 +216,7 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
         log.info("No unscored jobs with descriptions found.")
         return {"scored": 0, "errors": 0, "elapsed": 0.0, "distribution": []}
 
-    if jobs and not isinstance(jobs[0], dict):
-        columns = jobs[0].keys()
-        jobs = [dict(zip(columns, row)) for row in jobs]
-
-    log.info("Scoring %d jobs — location: %s, sponsorship needed: %s",
+    log.info("Pending jobs to score: %d — location: %s, sponsorship needed: %s",
              len(jobs),
              profile.get("personal", {}).get("country", "?"),
              profile.get("work_authorization", {}).get("require_sponsorship", "?"))
@@ -214,7 +224,8 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
     t0 = time.time()
     completed = 0
     errors = 0
-    results: list[dict] = []
+    scored_count = 0
+    high_score_urls: list[str] = []
 
     for job in jobs:
         result = score_job(resume_text, job, score_prompt)
@@ -223,46 +234,57 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
 
         if result["score"] == 0:
             errors += 1
+        elif result["score"] >= 7:
+            high_score_urls.append(job["url"])
 
-        results.append(result)
+        # Write score to DB immediately so users see progress live
+        now = datetime.now(timezone.utc).isoformat()
+        reasoning_text = f"{result['keywords']}\n{result['reasoning']}"
+        if user_id is not None:
+            try:
+                upsert_user_job(
+                    conn, user_id, job["url"],
+                    fit_score=result["score"],
+                    score_reasoning=reasoning_text,
+                    scored_at=now,
+                )
+                scored_count += 1
+                # Verify the first write persisted (catches silent Turso failures)
+                if scored_count == 1:
+                    verify = conn.execute(
+                        "SELECT fit_score FROM user_jobs WHERE user_id = ? AND job_url = ?",
+                        (user_id, job["url"]),
+                    ).fetchone()
+                    log.info("Write verification — persisted fit_score=%s for first job",
+                             verify[0] if verify else "NOT FOUND")
+            except Exception as e:
+                log.error(
+                    "Failed to persist score for user_id=%s url=%s: %s",
+                    user_id, job["url"][:80], e, exc_info=True,
+                )
+        else:
+            conn.execute(
+                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                (result["score"], reasoning_text, now, job["url"]),
+            )
+            conn.commit()
+            scored_count += 1
 
         log.info(
             "[%d/%d] score=%d  %s",
             completed, len(jobs), result["score"], job.get("title", "?")[:60],
         )
 
-    # Write scores to user_jobs (or legacy jobs table)
-    now = datetime.now(timezone.utc).isoformat()
-    if user_id is not None:
-        from applypilot.database import batch_upsert_scores
-        batch_upsert_scores(conn, user_id, results, now)
-    else:
-        for r in results:
-            conn.execute(
-                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-                (r["score"], f"{r['keywords']}\n{r['reasoning']}", now, r["url"]),
-            )
-        conn.commit()
+        # Push stats update every 5 jobs so frontend counter ticks up
+        if user_id is not None and completed % 5 == 0:
+            try:
+                from applypilot.web.routers.jobs import _invalidate_stats
+                _invalidate_stats(user_id)
+            except Exception:
+                pass
 
     elapsed = time.time() - t0
-    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", len(results), elapsed, len(results) / elapsed if elapsed > 0 else 0)
-
-    # Verify scores were persisted
-    if user_id is not None:
-        persisted = conn.execute(
-            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND fit_score IS NOT NULL",
-            (user_id,),
-        ).fetchone()[0]
-        still_unscored = conn.execute(
-            "SELECT COUNT(*) FROM jobs j WHERE j.full_description IS NOT NULL "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM user_jobs uj "
-            "  WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL"
-            ")",
-            (user_id,),
-        ).fetchone()[0]
-        log.info("Score persistence check — user %d: %d scored in DB, %d still unscored",
-                 user_id, persisted, still_unscored)
+    log.info("Done: %d scored in %.1fs (%.1f jobs/sec)", scored_count, elapsed, scored_count / elapsed if elapsed > 0 else 0)
 
     if user_id is not None:
         dist = conn.execute(
@@ -279,26 +301,24 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
         ).fetchall()
     distribution = [(row[0], row[1]) for row in dist]
 
-    # Push stats_changed event so the frontend updates without polling
-    if user_id is not None and results:
+    # Final stats push so frontend catches the last batch
+    if user_id is not None and scored_count:
         try:
-            from applypilot.web.core import notify_user
-            notify_user(user_id, "stats_changed")
+            from applypilot.web.routers.jobs import _invalidate_stats
+            _invalidate_stats(user_id)
         except Exception:
             pass
 
     # Notify user about newly scored high-match jobs (fire-and-forget)
-    if user_id is not None and results:
-        high_score_urls = [r["url"] for r in results if r.get("score", 0) >= 7]
-        if high_score_urls:
-            try:
-                from applypilot.notifications import notify_new_high_score_jobs
-                notify_new_high_score_jobs(user_id, high_score_urls)
-            except Exception as e:
-                log.debug("Notification send failed (non-fatal): %s", e)
+    if user_id is not None and high_score_urls:
+        try:
+            from applypilot.notifications import notify_new_high_score_jobs
+            notify_new_high_score_jobs(user_id, high_score_urls)
+        except Exception as e:
+            log.debug("Notification send failed (non-fatal): %s", e)
 
     return {
-        "scored": len(results),
+        "scored": scored_count,
         "errors": errors,
         "elapsed": elapsed,
         "distribution": distribution,

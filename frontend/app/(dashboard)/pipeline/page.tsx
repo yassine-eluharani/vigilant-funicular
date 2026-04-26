@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { LogStream } from "@/components/pipeline/LogStream";
 import { FunnelChart } from "@/components/pipeline/FunnelChart";
+import { ScoreDistributionChart } from "@/components/pipeline/ScoreDistributionChart";
 import { useSSE } from "@/lib/hooks/useSSE";
 import { useStats } from "@/lib/hooks/useStats";
 import { runPipeline, sseTaskUrl } from "@/lib/api";
@@ -105,11 +106,24 @@ export default function PipelinePage() {
           </div>
 
           {stats && (
-            <div className="w-full lg:w-72 shrink-0 bg-void-surface border border-void-border rounded-lg p-4">
-              <h3 className="text-xs font-medium text-void-muted uppercase tracking-wider mb-4">
-                Pipeline Funnel
-              </h3>
-              <FunnelChart funnel={stats.funnel} />
+            <div className="w-full lg:w-80 shrink-0 flex flex-col gap-6">
+              <div className="bg-void-surface border border-void-border rounded-lg p-4">
+                <h3 className="text-xs font-medium text-void-muted uppercase tracking-wider mb-4">
+                  Score Distribution
+                </h3>
+                <ScoreDistributionChart
+                  distribution={stats.score_distribution || {}}
+                  scored={stats.funnel.scored}
+                  pending={stats.funnel.pending_score}
+                />
+              </div>
+
+              <div className="bg-void-surface border border-void-border rounded-lg p-4">
+                <h3 className="text-xs font-medium text-void-muted uppercase tracking-wider mb-4">
+                  Pipeline Funnel
+                </h3>
+                <FunnelChart funnel={stats.funnel} />
+              </div>
             </div>
           )}
         </div>

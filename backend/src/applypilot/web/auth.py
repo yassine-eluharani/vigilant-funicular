@@ -199,7 +199,7 @@ def get_user_record(user_id: int) -> dict:
     from applypilot.database import get_connection
     conn = get_connection()
     row = conn.execute(
-        "SELECT id, email, full_name, tier, tailors_used, covers_used, usage_reset_at "
+        "SELECT id, email, full_name, tier, tailors_used, covers_used, usage_reset_at, profile_json "
         "FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
@@ -246,8 +246,10 @@ def check_and_increment_usage(user_id: int, kind: str) -> None:
             status_code=402,
             detail=f"Free plan limit: {FREE_COVER_LIMIT} cover letter per month. Upgrade to Pro.",
         )
-    field = "tailors_used" if kind == "tailor" else "covers_used"
-    conn.execute(f"UPDATE users SET {field} = {field} + 1 WHERE id = ?", (user_id,))
+    if kind == "tailor":
+        conn.execute("UPDATE users SET tailors_used = tailors_used + 1 WHERE id = ?", (user_id,))
+    else:
+        conn.execute("UPDATE users SET covers_used = covers_used + 1 WHERE id = ?", (user_id,))
     conn.commit()
 
 

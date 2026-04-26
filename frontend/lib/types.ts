@@ -90,6 +90,7 @@ export interface Stats {
   rejected: number;
   locked_count: number;
   sites: string[];
+  score_distribution: Record<string, number>;
   funnel: Funnel;
 }
 

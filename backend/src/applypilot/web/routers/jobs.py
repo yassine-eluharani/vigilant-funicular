@@ -92,6 +92,7 @@ def stats(user: dict = Depends(get_current_user)) -> JSONResponse:
         "rejected": s["rejected"],
         "locked_count": locked_count,
         "sites": [r[0] for r in sites],
+        "score_distribution": {str(sc): ct for sc, ct in s["score_distribution"]},
         "funnel": {
             "discovered":        s["total"],
             "pending_enrich":    s["pending_enrich"],
@@ -141,7 +142,15 @@ def list_jobs(
     )
     params: list = [user_id]
 
-    if status == "untailored":
+    if status == "scored":
+        # All scored jobs — no tailoring requirement, respects score range
+        clauses = [
+            "uj.fit_score IS NOT NULL",
+            "uj.fit_score >= ?",
+            "uj.fit_score <= ?",
+            "(uj.apply_status IS NULL OR uj.apply_status NOT IN ('dismissed','location_filtered'))",
+        ]
+    elif status == "untailored":
         clauses = [
             "uj.tailored_resume_path IS NULL",
             "uj.fit_score >= ?",
