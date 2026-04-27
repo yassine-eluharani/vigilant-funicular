@@ -32,6 +32,8 @@ export interface Job {
   resume_text?: string;
   cover_letter_text?: string;
   full_description?: string;
+  closed?: boolean;
+  closed_reason?: string | null;
 }
 
 // ── User / Tier ───────────────────────────────────────────────────────────────

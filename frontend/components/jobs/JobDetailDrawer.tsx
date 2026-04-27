@@ -186,6 +186,18 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
           </button>
         </div>
 
+        {/* Closed banner */}
+        {job?.closed && (
+          <div className="flex items-center gap-2 px-5 py-2.5 bg-void-danger/10 border-b border-void-danger/30 text-xs text-void-danger shrink-0">
+            <svg viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4 shrink-0">
+              <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm.75 4a.75.75 0 0 0-1.5 0v3.5a.75.75 0 0 0 1.5 0V5ZM8 12a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z" />
+            </svg>
+            <span>
+              This posting is no longer accepting applications. Tailoring is disabled to save your usage.
+            </span>
+          </div>
+        )}
+
         {/* Tabs */}
         {job && (
           <div className="flex border-b border-void-border shrink-0 px-5">
@@ -260,7 +272,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                   <p className="text-sm text-void-muted">No tailored resume yet.</p>
                   <button
                     onClick={handleGenerateResume}
-                    disabled={generatingResume}
+                    disabled={generatingResume || !!job.closed}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors"
                   >
                     {generatingResume ? (
@@ -288,7 +300,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                   <p className="text-sm text-void-muted">No cover letter yet.</p>
                   <button
                     onClick={handleGenerateCover}
-                    disabled={generatingCover}
+                    disabled={generatingCover || !!job.closed}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors"
                   >
                     {generatingCover ? (
@@ -336,7 +348,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                   </button>
                   <button
                     onClick={handleGenerateResume}
-                    disabled={generatingResume}
+                    disabled={generatingResume || !!job.closed}
                     className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text disabled:opacity-50 transition-colors"
                   >
                     {generatingResume ? (

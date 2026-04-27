@@ -9,7 +9,14 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 
-from applypilot.database import get_connection, upsert_user_job, batch_query
+from applypilot.database import (
+    get_connection,
+    upsert_user_job,
+    batch_query,
+    mark_job_closed,
+    mark_liveness_checked,
+)
+from applypilot.enrichment.liveness import verify_job_open
 from applypilot.web.auth import (
     get_current_user,
     get_user_record,
@@ -23,6 +30,35 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Stats cache: user_id → (computed_at, payload_dict)
 _stats_cache: dict[int, tuple[float, dict]] = {}
 _STATS_TTL = 30.0  # seconds
+
+
+def _ensure_job_open_or_410(job_url: str) -> None:
+    """Block tailor / cover-letter when the posting is verified closed.
+
+    Raises HTTP 410 Gone with a clear message so the frontend can show a toast
+    and we don't burn an LLM call or the user's monthly tailor count on a
+    dead listing. If the job was already marked closed previously, fail fast
+    without re-fetching.
+    """
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT closed_at FROM jobs WHERE url = ?", (job_url,)
+    ).fetchone()
+    if row and row["closed_at"]:
+        raise HTTPException(
+            status_code=410,
+            detail="This job posting is no longer open. It will be removed shortly.",
+        )
+    status = verify_job_open(job_url, timeout=5.0)
+    if status == "closed":
+        mark_job_closed(conn, job_url, reason="verified_closed_pre_tailor")
+        raise HTTPException(
+            status_code=410,
+            detail="This job posting is no longer accepting applications.",
+        )
+    if status == "open":
+        mark_liveness_checked(conn, job_url)
+    # status == "unknown" → don't block; preserve user flow on transient errors.
 
 
 def _invalidate_stats(user_id: int) -> None:
@@ -135,7 +171,9 @@ def list_jobs(
     conn = get_connection()
     user_id = user["id"]
 
-    # Base: always join jobs with user_jobs for this user
+    # Base: always join jobs with user_jobs for this user.
+    # Closed jobs are excluded from every list view (verified dead postings
+    # are useless to the user — only kept around for the grace-period cleanup).
     base = (
         "FROM jobs j "
         "LEFT JOIN user_jobs uj ON uj.job_url = j.url AND uj.user_id = ? "
@@ -197,6 +235,9 @@ def list_jobs(
         term = f"%{search}%"
         params.extend([term, term, term])
 
+    # Always hide jobs we've verified as closed
+    clauses.append("j.closed_at IS NULL")
+
     where = " AND ".join(clauses)
 
     total = conn.execute(f"SELECT COUNT(*) {base} WHERE {where}", params).fetchone()[0]
@@ -207,7 +248,8 @@ def list_jobs(
         f"uj.apply_status, uj.applied_at, "
         f"j.application_url, j.discovered_at, uj.tailored_at, COALESCE(uj.favorited, 0) as favorited "
         f"{base} WHERE {where} "
-        f"ORDER BY uj.fit_score DESC, j.discovered_at DESC "
+        # Newest first; fit_score only as tiebreaker within the same timestamp.
+        f"ORDER BY j.discovered_at DESC, uj.fit_score DESC "
         f"LIMIT ? OFFSET ?",
         params + [limit, offset],
     ).fetchall()
@@ -256,6 +298,36 @@ def get_job(encoded_url: str, user: dict = Depends(get_current_user)) -> JSONRes
     if not row:
         raise HTTPException(status_code=404, detail="Job not found")
     job = row_to_job(row)
+
+    # Lazy liveness check: only when the user actually engages (drawer open),
+    # only if not already known to be closed, and only if we haven't checked
+    # within the last 24h. Failures are silent — we'd rather show a stale job
+    # than block the drawer on network flakiness.
+    if not job.get("closed_at"):
+        last_checked = job.get("liveness_checked_at")
+        is_stale = True
+        if last_checked:
+            try:
+                t = datetime.datetime.fromisoformat(last_checked.replace("Z", "+00:00"))
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=datetime.timezone.utc)
+                age = datetime.datetime.now(datetime.timezone.utc) - t
+                is_stale = age.total_seconds() > 86400
+            except Exception:
+                is_stale = True
+        if is_stale:
+            try:
+                status = verify_job_open(job_url, timeout=5.0)
+                if status == "closed":
+                    mark_job_closed(conn, job_url, reason="verified_closed_on_view")
+                    job["closed_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    job["closed_reason"] = "verified_closed_on_view"
+                elif status == "open":
+                    mark_liveness_checked(conn, job_url)
+            except Exception:
+                pass
+
+    job["closed"] = bool(job.get("closed_at"))
 
     # Resume and cover letter text from DB
     job["resume_text"] = job.get("tailored_resume_text") or ""
@@ -335,8 +407,10 @@ def tailor_job(
     validation_mode: str = Query("normal"),
 ) -> JSONResponse:
     tailor_limiter.check(user["id"])
-    check_and_increment_usage(user["id"], "tailor")
     job_url = decode_url(encoded_url)
+    _ensure_job_open_or_410(job_url)
+    # Only count usage after we've confirmed the posting is still open.
+    check_and_increment_usage(user["id"], "tailor")
     from applypilot.scoring.tailor import tailor_job_by_url
     task_id = _start_task(tailor_job_by_url, job_url, user["id"], validation_mode)
     return JSONResponse({"task_id": task_id})
@@ -362,8 +436,9 @@ def cover_job(
     validation_mode: str = Query("normal"),
 ) -> JSONResponse:
     cover_limiter.check(user["id"])
-    check_and_increment_usage(user["id"], "cover")
     job_url = decode_url(encoded_url)
+    _ensure_job_open_or_410(job_url)
+    check_and_increment_usage(user["id"], "cover")
     from applypilot.scoring.cover_letter import cover_letter_by_url
     task_id = _start_task(cover_letter_by_url, job_url, user["id"], validation_mode)
     return JSONResponse({"task_id": task_id})

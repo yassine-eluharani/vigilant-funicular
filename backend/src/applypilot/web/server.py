@@ -28,9 +28,10 @@ _debug = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 
 @asynccontextmanager
 async def lifespan(_app):
-    from applypilot.database import init_db, cleanup_old_jobs
+    from applypilot.database import init_db, cleanup_old_jobs, cleanup_closed_jobs
     init_db()
     cleanup_old_jobs(days=60)
+    cleanup_closed_jobs(grace_days=7)
     yield
 
 app = FastAPI(

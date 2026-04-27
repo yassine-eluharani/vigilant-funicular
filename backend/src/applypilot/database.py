@@ -454,6 +454,10 @@ _ALL_COLUMNS: dict[str, str] = {
     "detail_error": "TEXT",
     # Filter
     "filtered_at": "TEXT",
+    # Liveness (closed/expired postings)
+    "closed_at": "TEXT",
+    "closed_reason": "TEXT",
+    "liveness_checked_at": "TEXT",
     # Phase 3 metadata
     "job_metadata_json": "TEXT",
     # Legacy per-user (kept for migration)
@@ -964,6 +968,64 @@ def cleanup_old_jobs(days: int = 60, conn: sqlite3.Connection | None = None) -> 
         import logging as _logging
         _logging.getLogger(__name__).info("Cleanup: deleted %d jobs older than %d days", deleted, days)
     return deleted
+
+
+def cleanup_closed_jobs(grace_days: int = 7, conn: sqlite3.Connection | None = None) -> int:
+    """Delete jobs marked closed more than `grace_days` ago.
+
+    The grace window lets users still see their tailored work for jobs that
+    closed recently (so they know not to bother applying) without ballooning
+    the table. Tailored / applied work is preserved regardless via the
+    user_jobs check, mirroring cleanup_old_jobs.
+    """
+    if conn is None:
+        conn = get_connection()
+    cursor = conn.execute(
+        """
+        DELETE FROM jobs
+        WHERE closed_at IS NOT NULL
+        AND closed_at < datetime('now', ?)
+        AND url NOT IN (
+            SELECT DISTINCT job_url FROM user_jobs
+            WHERE tailored_resume_path IS NOT NULL
+               OR cover_letter_path IS NOT NULL
+               OR applied_at IS NOT NULL
+        )
+        """,
+        (f"-{grace_days} days",),
+    )
+    deleted = cursor.rowcount
+    conn.commit()
+    if deleted:
+        import logging as _logging
+        _logging.getLogger(__name__).info(
+            "Cleanup: deleted %d jobs closed >%d days ago", deleted, grace_days
+        )
+    return deleted
+
+
+def mark_job_closed(conn: sqlite3.Connection, job_url: str, reason: str = "verified_closed") -> None:
+    """Mark a single job as closed (sets closed_at = now and stores the reason)."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE jobs SET closed_at = COALESCE(closed_at, ?), closed_reason = ?, "
+        "liveness_checked_at = ? WHERE url = ?",
+        (now, reason, now, job_url),
+    )
+    conn.commit()
+
+
+def mark_liveness_checked(conn: sqlite3.Connection, job_url: str) -> None:
+    """Stamp liveness_checked_at without flipping closed_at — used when the
+    posting is verified to still be open."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE jobs SET liveness_checked_at = ? WHERE url = ?",
+        (now, job_url),
+    )
+    conn.commit()
 
 
 def is_duplicate(conn: sqlite3.Connection, title: str | None,
