@@ -164,11 +164,59 @@ export interface Profile {
   eeo_voluntary?: Record<string, string>;
 }
 
-// ── System Status ─────────────────────────────────────────────────────────────
+// ── Searches ──────────────────────────────────────────────────────────────────
+// Persisted user search configuration. Mirrors the keys consumed by the
+// discovery worker; both `getSearches`/`updateSearches` round-trip this shape.
 
-export interface SystemStatus {
-  tier: 1 | 2;
-  tier_label: string;
-  llm_provider: string;
-  llm_model: string;
+export interface SearchQuery {
+  query: string;
+  tier: 1 | 2 | 3;
+}
+
+export interface SearchLocation {
+  location: string;
+  remote: boolean;
+}
+
+export interface SearchDefaults {
+  results_per_site?: number;
+  hours_old?: number;
+}
+
+export interface SearchLocationFilters {
+  accept_patterns?: string[];
+  reject_patterns?: string[];
+}
+
+export interface SearchConfig {
+  queries?: SearchQuery[];
+  locations?: SearchLocation[];
+  boards?: string[];
+  country?: string;
+  defaults?: SearchDefaults;
+  exclude_titles?: string[];
+  location?: SearchLocationFilters;
+}
+
+// ── Resume extraction ─────────────────────────────────────────────────────────
+// Shape returned by `parseResumeCv` — every field is optional because the LLM
+// may fail to extract any given key.
+
+export interface ExtractedResume {
+  full_name?: string;
+  email?: string;
+  phone?: string;
+  city?: string;
+  country?: string;
+  linkedin_url?: string;
+  github_url?: string;
+  portfolio_url?: string;
+  target_role?: string;
+  years_of_experience_total?: number;
+  education_level?: string;
+  skills?: NonNullable<Profile["skills_boundary"]>;
+  companies?: string[];
+  projects?: string[];
+  school?: string;
+  metrics?: string[];
 }

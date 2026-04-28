@@ -1,0 +1,101 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ApplyPilot nginx config — rendered by envsubst at container start.
+#
+# This file lives at /etc/nginx/templates/00-http-globals.conf.template and is
+# rendered into /etc/nginx/conf.d/00-http-globals.conf by the official nginx
+# image's `20-envsubst-on-templates.sh` entrypoint script. The base
+# /etc/nginx/nginx.conf already does `include /etc/nginx/conf.d/*.conf;` from
+# inside its `http {}` block, so all directives here are at http-scope.
+#
+# A sibling template, `10-https.conf.template`, is dropped into the same
+# /etc/nginx/templates dir by `/docker-entrypoint.d/15-pick-https.sh` ONLY when
+# the TLS cert for $DOMAIN exists. That avoids the first-boot redirect loop.
+#
+# Variables expected at envsubst time: $DOMAIN
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Strip query strings (e.g. ?token=<JWT>) from access logs (SEC-005) ────────
+# $request contains the full request line including the query string. We log a
+# sanitised path-only version instead.
+map $request_uri $loggable_uri {
+    ~^(?<base>[^?]+).*  $base;
+    default             $request_uri;
+}
+
+log_format applypilot '$remote_addr - $remote_user [$time_local] '
+                      '"$request_method $loggable_uri $server_protocol" '
+                      '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
+
+# ── Edge rate limiting (INF-010) ──────────────────────────────────────────────
+# 10r/s per IP for general API; 2r/s for /api/auth/. Stripe webhook is exempt
+# (see location block below) — Stripe's source IPs vary and rate-limiting them
+# would cause false-positive "endpoint down" reports.
+limit_req_zone $binary_remote_addr zone=api:10m  rate=10r/s;
+limit_req_zone $binary_remote_addr zone=auth:10m rate=2r/s;
+
+# ── Compression / body size ──────────────────────────────────────────────────
+gzip on;
+gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
+client_max_body_size 20M;
+
+upstream backend  { server backend:8000; }
+upstream frontend { server frontend:3000; }
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HTTP (port 80)
+# ──────────────────────────────────────────────────────────────────────────────
+# This server block is ALWAYS active. It serves:
+#   1. The ACME http-01 challenge (so certbot can obtain a cert).
+#   2. Reverse-proxy traffic to the app on plaintext until a cert is issued
+#      (avoiding the first-boot 301 redirect loop — INF-003).
+#
+# Once `/etc/letsencrypt/live/$DOMAIN/fullchain.pem` exists, the entrypoint
+# script also drops in 10-https.conf which adds the HTTPS server. The HTTP
+# server then 301s everything (except ACME) to HTTPS. We detect cert presence
+# by reading $https_enabled from the rendered globals — see the `if` below.
+# ──────────────────────────────────────────────────────────────────────────────
+
+server {
+    listen 80 default_server;
+    server_name _;
+
+    access_log /var/log/nginx/access.log applypilot;
+
+    # Always serve ACME challenges over HTTP so cert renewal works.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type "text/plain";
+    }
+
+    # When HTTPS is configured (cert present), redirect everything else.
+    # Otherwise (first boot, no cert yet) proxy the app on plaintext so the
+    # site is reachable while you run `setup-ssl.sh`.
+    location / {
+        if (-f /etc/nginx/conf.d/10-https.conf) {
+            return 301 https://$host$request_uri;
+        }
+        proxy_pass http://frontend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+    }
+
+    location /api/ {
+        if (-f /etc/nginx/conf.d/10-https.conf) {
+            return 301 https://$host$request_uri;
+        }
+        proxy_pass http://backend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_connect_timeout 5s;
+        limit_req zone=api burst=20 nodelay;
+    }
+}

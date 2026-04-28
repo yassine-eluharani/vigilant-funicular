@@ -4,6 +4,15 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAuth } from "@/contexts/AuthContext";
 
+/**
+ * DES-006 — icon-only left rail at 56px.
+ *
+ * NOTE: Per audit, the contextual sub-rail (e.g. a filter panel for /jobs)
+ * is deferred. This pass is intentionally just icons + tooltips. The
+ * sub-rail expansion can layer onto this later as a separate panel
+ * docked next to the rail.
+ */
+
 const NAV = [
   {
     href: "/jobs",
@@ -57,18 +66,24 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         />
       )}
 
-      {/* Sidebar panel */}
+      {/* Sidebar panel — 56px on desktop, full slide-over on mobile */}
       <aside
         className={`
-          fixed inset-y-0 left-0 z-40 flex flex-col w-52 border-r border-void-border bg-void-surface h-full
+          fixed inset-y-0 left-0 z-40 flex flex-col
+          w-14 border-r border-void-border bg-void-surface h-full
           transition-transform duration-200
           md:static md:translate-x-0 md:z-auto
           ${isOpen ? "translate-x-0" : "-translate-x-full"}
         `}
       >
         {/* Logo */}
-        <div className="flex items-center gap-2.5 px-4 py-4 border-b border-void-border">
-          <div className="w-7 h-7 rounded-lg bg-void-accent flex items-center justify-center shrink-0">
+        <div className="flex items-center justify-center h-14 border-b border-void-border shrink-0">
+          <Link
+            href="/jobs"
+            aria-label="ApplyPilot home"
+            title="ApplyPilot"
+            className="w-8 h-8 rounded-lg bg-void-accent flex items-center justify-center hover:bg-void-accent-hover transition-colors"
+          >
             <svg viewBox="0 0 20 20" fill="white" className="w-4 h-4">
               <path
                 fillRule="evenodd"
@@ -76,14 +91,11 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 clipRule="evenodd"
               />
             </svg>
-          </div>
-          <span className="text-sm font-semibold text-void-text tracking-tight">
-            ApplyPilot
-          </span>
+          </Link>
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 py-3 px-2 flex flex-col gap-0.5">
+        {/* Nav — icon-only, with active indicator on the LEFT edge */}
+        <nav className="flex-1 py-3 flex flex-col items-center gap-1">
           {NAV.map(({ href, label, icon }) => {
             const active = pathname.startsWith(href);
             return (
@@ -91,35 +103,48 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                 key={href}
                 href={href}
                 onClick={onClose}
+                title={label}
+                aria-label={label}
+                aria-current={active ? "page" : undefined}
                 className={`
-                  flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors
+                  relative flex items-center justify-center w-10 h-10 rounded-lg transition-colors
                   ${active
-                    ? "bg-void-raised text-void-text border border-void-border"
+                    ? "bg-void-raised text-void-accent"
                     : "text-void-muted hover:text-void-text hover:bg-void-raised/60"
                   }
                 `}
               >
-                <span className={active ? "text-void-accent" : ""}>{icon}</span>
-                {label}
+                {/* Active indicator — 2px periwinkle bar on the left edge */}
                 {active && (
-                  <span className="ml-auto w-1.5 h-1.5 rounded-full bg-void-accent" />
+                  <span
+                    aria-hidden
+                    className="absolute -left-2 top-1.5 bottom-1.5 w-[2px] rounded-r bg-void-accent"
+                  />
                 )}
+                {icon}
               </Link>
             );
           })}
         </nav>
 
-        {/* Footer */}
-        <div className="px-3 py-3 border-t border-void-border flex items-center justify-between gap-2">
-          <div className="min-w-0">
-            {user ? (
-              <p className="text-xs text-void-text truncate font-medium">{user.full_name}</p>
-            ) : null}
-            <p className="text-xs text-void-subtle font-mono">v1.0.0</p>
-          </div>
+        {/* Footer — user avatar + logout. v1.0.0 mono stamp dropped (DES-006). */}
+        <div className="py-3 border-t border-void-border flex flex-col items-center gap-2 shrink-0">
+          {user && (
+            <div
+              title={user.full_name || user.email}
+              aria-label={user.full_name || user.email}
+              className="
+                w-8 h-8 rounded-full bg-void-raised border border-void-border
+                flex items-center justify-center text-xs font-display text-void-text
+              "
+            >
+              {(user.full_name || user.email || "?").trim().charAt(0).toUpperCase()}
+            </div>
+          )}
           <button
             onClick={logout}
             aria-label="Sign out"
+            title="Sign out"
             className="p-1.5 rounded-lg text-void-subtle hover:text-void-danger hover:bg-void-danger/10 transition-colors"
           >
             <svg viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">

@@ -1,13 +1,27 @@
 import type {
+  ExtractedResume,
   Job,
   JobsResponse,
+  SearchConfig,
   Stats,
   Task,
   Profile,
-  SystemStatus,
   UserInfo,
 } from "./types";
-import { getToken, clearToken } from "./auth";
+import { getToken } from "./auth";
+
+/**
+ * Thrown by `apiFetch`/`req` when the backend returns 401. The middleware
+ * (in `proxy.ts`) is responsible for redirecting unauthenticated users to
+ * `/login`; consumers of the API client can catch this if they need to
+ * surface a custom message instead of letting it bubble up.
+ */
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("Unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
 
 // Use NEXT_PUBLIC_API_URL in browser, fallback to relative for SSR behind nginx
 // Browser: empty string = relative URLs, proxied by Next.js rewrites to backend.
@@ -28,9 +42,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { ...init, headers });
 
   if (res.status === 401) {
-    clearToken();
-    if (typeof window !== "undefined") window.location.href = "/login";
-    throw new Error("Unauthorized");
+    throw new UnauthorizedError();
   }
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText);
@@ -55,7 +67,7 @@ export interface JobsQuery {
   limit?: number;
 }
 
-export function getJobs(q: JobsQuery = {}): Promise<JobsResponse> {
+export function getJobs(q: JobsQuery = {}, signal?: AbortSignal): Promise<JobsResponse> {
   const params = new URLSearchParams();
   if (q.min_score != null) params.set("min_score", String(q.min_score));
   if (q.max_score != null) params.set("max_score", String(q.max_score));
@@ -64,7 +76,7 @@ export function getJobs(q: JobsQuery = {}): Promise<JobsResponse> {
   if (q.status)            params.set("status", q.status);
   if (q.offset != null)    params.set("offset", String(q.offset));
   if (q.limit != null)     params.set("limit", String(q.limit));
-  return req(`/api/jobs?${params}`);
+  return req(`/api/jobs?${params}`, signal ? { signal } : undefined);
 }
 
 export const getJob = (encodedUrl: string): Promise<Job> =>
@@ -126,20 +138,20 @@ export const getProfile = (): Promise<Profile> => req("/api/profile");
 export const updateProfile = (data: Profile): Promise<{ ok: boolean }> =>
   req("/api/profile", { method: "PUT", body: JSON.stringify(data) });
 
-export const getSearches = (): Promise<Record<string, unknown>> =>
+export const getSearches = (): Promise<SearchConfig> =>
   req("/api/config/searches");
-export const updateSearches = (data: Record<string, unknown>) =>
+export const updateSearches = (data: SearchConfig) =>
   req("/api/config/searches", { method: "PUT", body: JSON.stringify(data) });
 
-export const getEmployers = (): Promise<Record<string, unknown>> =>
-  req("/api/config/employers");
-export const updateEmployers = (data: Record<string, unknown>) =>
-  req("/api/config/employers", { method: "PUT", body: JSON.stringify(data) });
+export type EnvConfig = {
+  gemini_configured: boolean;
+  openai_configured: boolean;
+  llm_url_set: boolean;
+  llm_model: string | null;
+};
 
-export const getEnvConfig = (): Promise<Record<string, string | null>> =>
+export const getEnvConfig = (): Promise<EnvConfig> =>
   req("/api/config/env");
-export const updateEnvConfig = (data: Record<string, string>) =>
-  req("/api/config/env", { method: "PUT", body: JSON.stringify(data) });
 
 export const getResumeText = (): Promise<{ text: string; exists: boolean }> =>
   req("/api/config/resume");
@@ -157,7 +169,7 @@ export async function uploadResumePdf(file: File): Promise<{ ok: boolean; size: 
   return res.json();
 }
 
-export async function parseResumeCv(text: string): Promise<{ ok: boolean; extracted: Partial<Profile> }> {
+export async function parseResumeCv(text: string): Promise<{ ok: boolean; extracted: ExtractedResume }> {
   return req("/api/config/resume/parse", {
     method: "POST",
     body: JSON.stringify({ text }),
@@ -180,14 +192,13 @@ export const createBillingPortalSession = (): Promise<{ portal_url: string }> =>
 export const getSchedulerStatus = (): Promise<{ last_sync: string | null; jobs_found: number }> =>
   req("/api/scheduler/status");
 
-// ── System ────────────────────────────────────────────────────────────────────
-
-export const getSystemStatus = (): Promise<SystemStatus> => req("/api/system/status");
-
 // ── URL helpers ───────────────────────────────────────────────────────────────
+// EventSource can't carry an Authorization header — callers must append
+// `?token=<jwt>` (or `&token=<jwt>` if the URL already has a query string)
+// themselves. We keep both helpers consistent and token-agnostic.
 
-export const sseTaskUrl       = (taskId: string)     => `${BASE}/api/stream/task/${taskId}`;
-export const sseUserEventsUrl = (token: string)      => `${BASE}/api/stream/user/events?token=${encodeURIComponent(token)}`;
+export const sseTaskUrl       = (taskId: string) => `${BASE}/api/stream/task/${taskId}`;
+export const sseUserEventsUrl = ()               => `${BASE}/api/stream/user/events`;
 
 // ── Authenticated file downloads ──────────────────────────────────────────────
 // Plain <a href> can't carry the Authorization header, so the server returns 401.
@@ -199,9 +210,7 @@ async function fetchFileBlob(path: string): Promise<Blob> {
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${BASE}${path}`, { headers });
   if (res.status === 401) {
-    clearToken();
-    if (typeof window !== "undefined") window.location.href = "/login";
-    throw new Error("Unauthorized");
+    throw new UnauthorizedError();
   }
   if (!res.ok) {
     const err = await res.text().catch(() => res.statusText);

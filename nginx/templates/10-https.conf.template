@@ -1,0 +1,116 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# ApplyPilot nginx — HTTPS server block.
+#
+# This template is conditionally placed in /etc/nginx/templates/ by
+# /docker-entrypoint.d/15-pick-https.sh — only when
+# /etc/letsencrypt/live/$DOMAIN/fullchain.pem exists. envsubst then renders it
+# to /etc/nginx/conf.d/10-https.conf. If the cert is missing, this file is
+# absent so nginx never tries (and fails) to load it (INF-001 + INF-003).
+#
+# Variables expected at envsubst time: $DOMAIN
+# ──────────────────────────────────────────────────────────────────────────────
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name _;
+
+    access_log /var/log/nginx/access.log applypilot;
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+
+    # ── Mozilla intermediate TLS profile (INF-014) ───────────────────────────
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # OCSP stapling
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 8.8.8.8 8.8.4.4 valid=300s;
+    resolver_timeout 5s;
+
+    # ── Security headers (SEC-008 / INF-013) ─────────────────────────────────
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "DENY" always;
+    add_header Referrer-Policy           "no-referrer" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=()" always;
+    # CSP — conservative; tune connect-src/script-src/frame-src as new
+    # third-parties are added. Clerk + Stripe are the current allowlist.
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: https:; script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com https://js.stripe.com; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://api.stripe.com; frame-src https://js.stripe.com https://*.clerk.com; frame-ancestors 'none'" always;
+
+    # ── Stripe webhook — UNLIMITED (Stripe IPs vary; rate-limiting causes
+    #     false-positive endpoint-down alerts on their side). Place BEFORE the
+    #     generic /api/ block so the longer prefix wins. (INF-010)
+    location = /api/stripe/webhook {
+        proxy_pass http://backend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_connect_timeout 5s;
+    }
+
+    # ── Auth endpoints — stricter rate limit (INF-010) ──────────────────────
+    location /api/auth/ {
+        proxy_pass http://backend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_connect_timeout 5s;
+        limit_req zone=auth burst=5 nodelay;
+    }
+
+    # ── SSE — long-lived; needs the 1h read timeout. (INF-015) ───────────────
+    location /api/stream/ {
+        proxy_pass http://backend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_http_version 1.1;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_connect_timeout 5s;
+        chunked_transfer_encoding on;
+        limit_req zone=api burst=20 nodelay;
+    }
+
+    # ── General API → FastAPI (INF-015: short timeouts, INF-010: rate limit)
+    location /api/ {
+        proxy_pass http://backend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_connect_timeout 5s;
+        limit_req zone=api burst=20 nodelay;
+    }
+
+    # ── Everything else → Next.js frontend ───────────────────────────────────
+    location / {
+        proxy_pass http://frontend;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade           $http_upgrade;
+        proxy_set_header Connection        "upgrade";
+    }
+}

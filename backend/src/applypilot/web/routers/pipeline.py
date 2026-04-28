@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from applypilot.web.auth import get_current_user
 from applypilot.web.core import _tasks, _start_task, score_limiter
+from applypilot.web.schemas import (
+    MaybeScoreResponse,
+    PipelineRunRequest,
+    PipelineRunResponse,
+    TaskStatusResponse,
+)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -22,13 +27,15 @@ def _do_run_pipeline(stages: list[str], workers: int,
     )
 
 
-@router.post("/api/pipeline/run")
-async def pipeline_run(request: Request, user: dict = Depends(get_current_user)) -> JSONResponse:
+@router.post("/api/pipeline/run", response_model=PipelineRunResponse)
+def pipeline_run(
+    payload: PipelineRunRequest,
+    user: dict = Depends(get_current_user),
+) -> PipelineRunResponse:
     score_limiter.check(user["id"])
-    body = await request.json()
-    stages = body.get("stages", ["score"])
-    workers = int(body.get("workers", 1))
-    stream = bool(body.get("stream", False))
+    stages = payload.stages
+    workers = int(payload.workers)
+    stream = bool(payload.stream)
 
     # Guard: don't start a scoring task when there's nothing to score
     if stages == ["score"]:
@@ -43,14 +50,14 @@ async def pipeline_run(request: Request, user: dict = Depends(get_current_user))
             (user["id"],),
         ).fetchone()[0]
         if not unscored:
-            return JSONResponse({"task_id": None, "skipped": True, "reason": "no unscored jobs"})
+            return PipelineRunResponse(task_id=None, skipped=True, reason="no unscored jobs")
 
     task_id = _start_task(_do_run_pipeline, stages, workers, stream, user["id"])
-    return JSONResponse({"task_id": task_id})
+    return PipelineRunResponse(task_id=task_id)
 
 
-@router.post("/api/pipeline/maybe-score")
-async def maybe_score(user: dict = Depends(get_current_user)) -> JSONResponse:
+@router.post("/api/pipeline/maybe-score", response_model=MaybeScoreResponse)
+def maybe_score(user: dict = Depends(get_current_user)) -> MaybeScoreResponse:
     """Start a scoring task if this user has unscored jobs. Idempotent.
 
     Safe to call on every page load — returns immediately if scoring is already
@@ -59,20 +66,20 @@ async def maybe_score(user: dict = Depends(get_current_user)) -> JSONResponse:
     from applypilot.web.core import trigger_score_for_user
     task_id = trigger_score_for_user(user["id"])
     if task_id:
-        return JSONResponse({"started": True, "task_id": task_id})
-    return JSONResponse({"started": False, "reason": "no unscored jobs"})
+        return MaybeScoreResponse(started=True, task_id=task_id)
+    return MaybeScoreResponse(started=False, reason="no unscored jobs")
 
 
-@router.get("/api/tasks/{task_id}")
-def get_task(task_id: str, since: int = Query(0, ge=0)) -> JSONResponse:
+@router.get("/api/tasks/{task_id}", response_model=TaskStatusResponse)
+def get_task(task_id: str, since: int = Query(0, ge=0)) -> TaskStatusResponse:
     task = _tasks.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     all_lines = task.get("log_lines", [])
-    return JSONResponse({
-        "status": task["status"],
-        "result": task.get("result"),
-        "error": task.get("error"),
-        "log_lines": all_lines[since:],
-        "log_total": len(all_lines),
-    })
+    return TaskStatusResponse(
+        status=task["status"],
+        result=task.get("result"),
+        error=task.get("error"),
+        log_lines=all_lines[since:],
+        log_total=len(all_lines),
+    )

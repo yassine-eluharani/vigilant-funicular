@@ -1,31 +1,117 @@
-name: Publish to PyPI
+name: Publish container images
+
+# ApplyPilot is a SaaS, not a library — we publish Docker images to GHCR
+# instead of a Python wheel to PyPI (INF-025).
+#
+# Triggers:
+#   - push to main → tags images with `sha-<short>` (dev images)
+#   - push of `v*` tags → tags images with the version tag and `latest`
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
-  publish:
+  build:
+    name: Build & push (${{ matrix.service }})
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
-      id-token: write  # required for OIDC trusted publishing
+      contents: read
+      packages: write
+      id-token: write   # cosign keyless signing (sigstore OIDC)
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+            target: production
+          - service: frontend
+            context: ./frontend
+            dockerfile: ./frontend/Dockerfile
+            target: production
+          - service: nginx
+            context: ./nginx
+            dockerfile: ./nginx/Dockerfile
+            target: ""
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          python-version: "3.12"
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install build tools
-        run: pip install build
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.service }}
+          tags: |
+            type=ref,event=branch
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Build package
-        run: python -m build
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+          provenance: true
+          sbom: true
 
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless)
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          # Sign each pushed tag by digest. Keyless signing uses the
+          # GitHub Actions OIDC token (no private key checked in).
+          for tag in $TAGS; do
+            cosign sign --yes "${tag}@${DIGEST}"
+          done
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          artifact-name: sbom-${{ matrix.service }}.spdx.json
+          output-file: sbom-${{ matrix.service }}.spdx.json
+
+      - name: Attest SBOM with cosign
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}-${{ matrix.service }}@${{ steps.build.outputs.digest }}
+          COSIGN_EXPERIMENTAL: "true"
+        run: |
+          cosign attest --yes \
+            --predicate sbom-${{ matrix.service }}.spdx.json \
+            --type spdxjson \
+            "${IMAGE}"

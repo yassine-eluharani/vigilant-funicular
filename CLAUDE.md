@@ -5,6 +5,8 @@ Multi-user SaaS platform: a background discovery worker continuously populates a
 **Fullstack monorepo** — Next.js frontend + FastAPI backend + Docker.
 **Discovery worker** lives in a separate repo (`applypilot-discovery`) and shares the same Turso DB.
 
+> Deeper context (architecture, module map, decisions, per-area details) lives in the personal KB at `~/.claude/memory-compiler/knowledge/projects/applypilot/`. This file is the repo-portable summary — anything that ships with the code goes here; anything that changes often goes in the KB.
+
 ## Tech Stack
 
 - **Frontend**: Next.js 16 (App Router), React 19, Tailwind CSS v4, TypeScript
@@ -14,106 +16,35 @@ Multi-user SaaS platform: a background discovery worker continuously populates a
 - **Payments**: Stripe Checkout + webhook
 - **Infra**: Docker + Docker Compose (dev + prod), nginx reverse proxy
 
-## Project Layout
+## Project Layout (top-level)
 
 ```
 applypilot/
-├── backend/
-│   ├── src/applypilot/
-│   │   ├── web/
-│   │   │   ├── server.py           # FastAPI app entry point + lifespan
-│   │   │   ├── core.py             # Task registry, URL helpers, auto-scoring, rate limiter
-│   │   │   ├── auth.py             # Clerk JWT verify, upsert_user, usage limits
-│   │   │   └── routers/
-│   │   │       ├── auth.py         # /api/auth/me, /api/auth/upgrade
-│   │   │       ├── jobs.py         # /api/jobs, /api/stats, tailor, cover, status mutations
-│   │   │       ├── pipeline.py     # /api/pipeline/run, /api/pipeline/maybe-score, /api/tasks
-│   │   │       ├── config.py       # profile, searches, resume, env keys, scheduler status
-│   │   │       ├── stripe_router.py# /api/stripe/create-checkout, /api/stripe/webhook
-│   │   │       └── stream.py       # /api/stream/task/{id} (SSE)
-│   │   ├── discovery/              # jobspy, workday, smartextract, filter (kept for reference)
-│   │   ├── enrichment/detail.py    # Full description + apply URL cascade
-│   │   ├── scoring/                # scorer, tailor, cover_letter, pdf, validator, indexer
-│   │   ├── notifications.py        # Email digest (Resend + SMTP fallback)
-│   │   ├── database.py             # Schema, migrations, helpers, cleanup_old_jobs
-│   │   ├── scheduler.py            # Discovery run tracking helpers (is_stale, last_sync_info)
-│   │   ├── llm.py                  # Unified LLM client (Gemini/OpenAI/local)
-│   │   ├── pipeline.py             # Score-only pipeline orchestrator
-│   │   └── config.py               # Paths (APPLYPILOT_DIR), tier system
-│   ├── pyproject.toml
-│   └── Dockerfile
-├── frontend/
-│   ├── app/
-│   │   ├── layout.tsx              # Root layout: Sidebar + ToastProvider
-│   │   ├── (dashboard)/
-│   │   │   ├── jobs/page.tsx       # Jobs dashboard — auto-scores on mount
-│   │   │   ├── pipeline/page.tsx   # Pipeline control (score stage only)
-│   │   │   ├── profile/page.tsx    # Profile & config (5 tabs)
-│   │   │   └── setup/page.tsx      # Onboarding wizard (4 steps)
-│   │   └── (marketing)/
-│   │       ├── page.tsx            # Landing page
-│   │       └── pricing/page.tsx    # Pricing page
-│   ├── components/
-│   │   ├── ui/Toast.tsx
-│   │   ├── layout/Sidebar.tsx
-│   │   └── jobs/                   # JobCard, JobFilters, JobDetailDrawer, ScoreBadge
-│   ├── lib/
-│   │   ├── api.ts                  # Typed fetch wrappers for all endpoints
-│   │   ├── types.ts                # Job, Stats, Task, Profile, UserInfo, SystemStatus
-│   │   └── hooks/                  # useJobs, useStats, useSSE
-│   ├── next.config.ts              # output: standalone, /api proxy rewrite
-│   └── Dockerfile
-├── nginx/
-│   ├── nginx.conf                  # HTTP + HTTPS, /api/ → backend, SSE-safe
-│   └── Dockerfile
-├── docker-compose.yml              # Base (shared volumes)
-├── docker-compose.dev.yml          # Hot reload, direct ports, no nginx
-├── docker-compose.prod.yml         # Optimized builds, nginx on :80/:443
-├── setup-ssl.sh                    # Certbot SSL setup helper
-├── sync-shared-modules.sh          # Sync shared modules to applypilot-discovery
+├── backend/                 # FastAPI app (src/applypilot/), pyproject.toml, Dockerfile
+├── frontend/                # Next.js app (app/, components/, lib/), Dockerfile
+├── nginx/                   # Reverse proxy config + Dockerfile
+├── docker-compose.yml       # Base
+├── docker-compose.dev.yml   # Hot reload, direct ports, no nginx
+├── docker-compose.prod.yml  # Optimized builds, nginx on :80/:443
+├── setup-ssl.sh             # Certbot SSL helper
+├── sync-shared-modules.sh   # Push shared modules → applypilot-discovery
 └── .env.example
 ```
 
+Full module tree and per-file responsibilities: see KB `architecture/module-map`.
+
 ## Architecture
 
-```
-Browser → nginx → Next.js (3000)
-                → FastAPI (8000) → Turso DB (shared)
-                                                ↑
-                              applypilot-discovery worker (separate repo)
-                              runs every 2h: discover → enrich → filter → index
-```
+Browser → nginx → Next.js + FastAPI → Turso (shared with `applypilot-discovery` worker, separate repo).
 
-**Discovery worker** (`applypilot-discovery/`) handles the shared job pool:
-1. **discover** — Scrape job boards (JobSpy: Indeed, LinkedIn, etc.) + popular searches
-2. **enrich** — Full descriptions + apply URLs (3-tier: JSON-LD → CSS → LLM)
-3. **filter** — Mark country-restricted jobs (`apply_status='location_filtered'`)
-4. **index** — LLM extracts structured metadata once per job (`job_metadata_json`)
-
-**Main platform** handles per-user actions:
-- **score** — LLM rates fit 1–10 against user profile + resume (runs automatically)
-- **tailor** — LLM generates tailored resume JSON per job (on-demand, usage-limited)
-- **cover** — LLM generates cover letter per job (on-demand, usage-limited)
-
-## Key Patterns
-
-- **Auth**: Clerk RS256 JWTs. `get_current_user()` verifies + upserts user on every request. No passwords.
-- **DB**: `jobs` table (shared, written by discovery worker). `user_jobs` table (per-user scores/tailors/covers). `users` table (Clerk-synced, stores profile/resume/searches as JSON).
-- **Turso**: `_TursoConnection` in `database.py` — sqlite3-compatible HTTP wrapper. Has `__enter__`/`__exit__` so `with get_connection()` works. Auto-commits.
-- **Auto-scoring**: `trigger_score_for_user(user_id)` in `core.py`. Called on profile/resume save and on jobs-page mount via `POST /api/pipeline/maybe-score`. Idempotent.
-- **Rate limiting**: `RateLimiter` in `core.py` — sliding window, in-memory per user. Applied to tailor/cover/pipeline.
-- **LLM client**: Auto-detects provider from env vars. Gemini tries OpenAI-compat first, falls back to native API on 403/404. Exponential backoff on rate limits.
-- **SSE**: `GET /api/stream/task/{id}?token=<jwt>` — token as query param (EventSource can't send headers).
-- **Validation**: 42 banned words, 20 LLM leak phrases, fabrication watchlist. Modes: strict/normal/lenient.
-- **Cleanup**: `cleanup_old_jobs(days=60)` runs on startup — deletes unscored jobs older than 60 days.
-- **Stripe**: `POST /api/stripe/create-checkout` → Stripe Checkout. `POST /api/stripe/webhook` flips tier to `pro`. Falls back to direct upgrade when `STRIPE_SECRET_KEY` not set.
+The discovery worker runs `discover → enrich → filter → index` on its own schedule. The main platform only runs `score` (per-user) and on-demand `tailor` / `cover`. See KB `architecture/data-flow` and `pipeline/_index` for details.
 
 ## Tier System
 
 - **Free**: 3 tailors/month, 1 cover letter/month. Jobs scoring ≥ 8 are blurred (`locked: true`).
 - **Pro**: Unlimited tailors + cover letters. All jobs visible.
 
-Upgrade flow: free user clicks "Upgrade" → Stripe Checkout → webhook → `tier='pro'` in DB.
+Upgrade flow: free user clicks "Upgrade" → Stripe Checkout → webhook → `tier='pro'` in DB. Falls back to direct upgrade when `STRIPE_SECRET_KEY` not set.
 
 ## User Config (stored in `users` DB row)
 
@@ -121,7 +52,7 @@ Upgrade flow: free user clicks "Upgrade" → Stripe Checkout → webhook → `ti
 - `searches_json` — Queries, locations, boards, title filters, location filters
 - `resume_text` — Master resume (plain text)
 
-Also used from filesystem (legacy single-user fallback): `$APPLYPILOT_DIR/profile.json`, `searches.yaml`, `resume.txt`.
+Filesystem fallback (legacy single-user): `$APPLYPILOT_DIR/profile.json`, `searches.yaml`, `resume.txt`.
 
 ## Environment Variables
 
@@ -129,6 +60,8 @@ Also used from filesystem (legacy single-user fallback): `$APPLYPILOT_DIR/profil
 # Auth (required)
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_...
 CLERK_SECRET_KEY=sk_...
+# CLERK_AUDIENCE=...  # optional — pin JWT `aud` claim for defense in depth
+                      # (issuer is always pinned, derived from the publishable key)
 
 # Database (required for production)
 DATABASE_URL=libsql://...
@@ -188,15 +121,75 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
 DOMAIN=yourdomain.com ./setup-ssl.sh
 ```
 
-## Discovery Worker (separate repo)
+## Discovery Worker
 
-`applypilot-discovery` runs independently on a homelab LXC or any server.
-It shares the same `DATABASE_URL`/`DATABASE_TOKEN` as the main platform.
+Lives in `applypilot-discovery` (separate repo), shares the same `DATABASE_URL`/`DATABASE_TOKEN`. Shared modules (`discovery.py`, `enrichment.py`, `filter.py`, `indexer.py`, `llm.py`, `turso.py`) are inlined copies — run `./sync-shared-modules.sh` to push updates from this repo.
 
-The main platform's `GET /api/scheduler/status` reads `discovery_runs` to show
-when the worker last ran. The manual sync trigger was removed — all discovery is
-handled by the worker's own schedule.
+## Backend dependency lockfile (INF-019)
 
-**Shared modules** (`discovery.py`, `enrichment.py`, `filter.py`, `indexer.py`, `llm.py`, `turso.py`)
-are inlined copies from this repo. Run `./sync-shared-modules.sh` to push
-updates from this repo → discovery worker.
+`backend/requirements.lock` is the source of truth for production installs and is committed to the repo. The Dockerfile installs from it directly. Whenever you edit `backend/pyproject.toml`, regenerate the lockfile:
+
+```bash
+cd backend
+uv pip compile pyproject.toml -o requirements.lock
+# or, with pip-tools:
+# pip-compile pyproject.toml -o requirements.lock
+```
+
+Commit the regenerated `requirements.lock` alongside the `pyproject.toml` change.
+
+## Frontend E2E tests (TST-020)
+
+Playwright tests live in `frontend/e2e/`. All `/api/*` calls are stubbed via `route.fulfill` (see `frontend/e2e/helpers/stubs.ts`) so tests run without a live backend. Run locally:
+
+```bash
+cd frontend
+npm run e2e         # installs Chromium, then runs tests
+npm run e2e:test    # skips browser install (assumes already installed)
+```
+
+CI runs the suite in `.github/workflows/ci.yml:frontend`. Tests that depend on Clerk-protected routes are currently `test.fixme()`'d until a `NEXT_PUBLIC_TEST_MODE` auth bypass lands in the app — the structure exists so flipping them on is a one-line change.
+
+## Skill usage
+
+When a task matches an active skill's trigger (listed in the disposition below), invoke it via the `Skill` tool before proceeding — don't just rely on training knowledge. Specifically:
+
+- **Workflow skills (`superpowers`)** are proactive — invoke without being asked:
+  - `brainstorming` — before any new feature, component, or behavior change
+  - `writing-plans` — when a task has more than ~3 steps or touches multiple files
+  - `test-driven-development` — before implementing a feature or bugfix
+  - `systematic-debugging` — when a bug, test failure, or unexpected behavior shows up
+  - `verification-before-completion` — before claiming work is done, fixed, or passing
+  - `requesting-code-review` / `receiving-code-review` — at major milestones or before merge
+  - `using-git-worktrees` — when starting work that needs isolation
+  - `dispatching-parallel-agents` / `subagent-driven-development` — for 2+ independent tasks
+- **Domain skills** fire on their own triggers — invoke them when:
+  - Editing FastAPI routes / Pydantic models → `fastapi-expert`
+  - Editing Python beyond a one-liner → `python-pro`
+  - Editing Next.js pages, layouts, route handlers → `nextjs-developer`
+  - Editing TS types, generics, type guards → `typescript-pro`
+  - Touching auth, Stripe webhooks, multi-user data isolation → `secure-code-guardian`
+  - Writing/debugging Playwright (liveness checks, future E2E) → `playwright-expert`
+  - Editing Dockerfiles, compose files, nginx config → `devops-engineer`
+  - Building UI components or pages with design intent → `frontend-design`
+
+If multiple skills match, invoke the most specific one first. Skip if the task is too small (typo fix, one-line edit, read-only question).
+
+<!-- skills-disposition: catalog-version=2026-04-27-73f386cf3fe4 updated=2026-04-27 -->
+## Skills disposition
+
+**Active in this project:**
+- `fastapi-expert` (plugin-skill from `fullstack-dev-skills`) — backend framework match
+- `python-pro` (plugin-skill from `fullstack-dev-skills`) — Python 3.11+ codebase
+- `secure-code-guardian` (plugin-skill from `fullstack-dev-skills`) — JWT, Stripe webhook, multi-user data isolation surface
+- `nextjs-developer` (plugin-skill from `fullstack-dev-skills`) — Next.js 16 App Router with route groups
+- `typescript-pro` (plugin-skill from `fullstack-dev-skills`) — TS frontend with Job/Stats/Task type system
+- `playwright-expert` (plugin-skill from `fullstack-dev-skills`) — Playwright now in backend container for liveness checks
+- `devops-engineer` (plugin-skill from `fullstack-dev-skills`) — Docker Compose + nginx + SSL stack
+- `frontend-design@claude-plugins-official` (full plugin) — distinctive, production-grade frontend design
+- `superpowers@superpowers-marketplace` (full plugin) — 14 workflow skills incl. brainstorming, systematic-debugging, TDD, plan execution, code review
+
+**Declined:**
+- `prompt-engineer` — declined despite heavy LLM use; user prefers to refine prompts manually
+
+**Deferred:** _none_

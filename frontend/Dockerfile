@@ -1,10 +1,19 @@
+# syntax=docker/dockerfile:1.7
+
+# TODO(INF-018): pin to digest via Renovate (e.g. node:20-alpine@sha256:...).
+# Manual pinning would drift on every base-image update; let Renovate handle it.
 FROM node:20-alpine AS base
 
 WORKDIR /app
 
+# Healthcheck tooling — wget ships with alpine, no extra install needed.
+
 # ── Dependencies stage ────────────────────────────────────────────────────────
 FROM base AS deps
-COPY package.json package-lock.json* ./
+# INF-020: enforce that package-lock.json is present. Drop the `*` glob so
+# COPY fails outright if the lockfile is missing, and double-check after.
+COPY package.json package-lock.json ./
+RUN test -f package-lock.json || (echo "ERROR: package-lock.json missing — run 'npm install' locally and commit it." >&2 && exit 1)
 RUN npm ci
 
 # ── Development stage ─────────────────────────────────────────────────────────
@@ -12,6 +21,8 @@ FROM base AS development
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget --quiet --spider http://localhost:3000/ || exit 1
 CMD ["npm", "run", "dev"]
 
 # ── Builder stage ─────────────────────────────────────────────────────────────
@@ -41,4 +52,6 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD wget --quiet --spider http://localhost:3000/ || exit 1
 CMD ["node", "server.js"]

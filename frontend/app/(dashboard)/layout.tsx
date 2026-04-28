@@ -1,36 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useRouter, usePathname } from "next/navigation";
-import { useAuth } from "@/contexts/AuthContext";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 
 const NO_SIDEBAR = ["/setup"];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuth();
-  const router = useRouter();
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Close sidebar on route change
   useEffect(() => { setSidebarOpen(false); }, [pathname]);
-
-  useEffect(() => {
-    if (!isLoading && !isAuthenticated) {
-      router.replace(`/login?next=${encodeURIComponent(pathname)}`);
-    }
-  }, [isAuthenticated, isLoading, router, pathname]);
-
-  if (isLoading) {
-    return (
-      <div className="h-full flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-void-border border-t-void-accent rounded-full animate-spin-slow" />
-      </div>
-    );
-  }
-
-  if (!isAuthenticated) return null;
 
   const showSidebar = !NO_SIDEBAR.some((p) => pathname.startsWith(p));
 

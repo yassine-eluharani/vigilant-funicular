@@ -14,6 +14,9 @@ export function useJobs(filters: Filters) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const offsetRef = useRef(0);
+  // Track the in-flight request so rapid filter changes don't deliver stale
+  // responses out-of-order. Each new fetch aborts the previous controller.
+  const abortRef = useRef<AbortController | null>(null);
   const hasMore = jobs.length < total;
 
   const fetchJobs = useCallback(
@@ -22,25 +25,39 @@ export function useJobs(filters: Filters) {
       if (reset) setLoading(true);
       else setLoadingMore(true);
 
+      // Cancel any previous in-flight request
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       try {
-        const data: JobsResponse = await getJobs({
-          min_score: filters.minScore,
-          max_score: filters.maxScore,
-          site: filters.site || undefined,
-          search: filters.search || undefined,
-          status: filters.status,
-          offset,
-          limit: PAGE_SIZE,
-        });
+        const data: JobsResponse = await getJobs(
+          {
+            min_score: filters.minScore,
+            max_score: filters.maxScore,
+            site: filters.site || undefined,
+            search: filters.search || undefined,
+            status: filters.status,
+            offset,
+            limit: PAGE_SIZE,
+          },
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
         setJobs((prev) => (reset ? data.jobs : [...prev, ...data.jobs]));
         setTotal(data.total);
         offsetRef.current = offset + data.jobs.length;
         setError(null);
       } catch (e) {
+        // Swallow aborts — they're expected when filters change rapidly
+        if (controller.signal.aborted) return;
+        if (e instanceof DOMException && e.name === "AbortError") return;
         setError(String(e));
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
+        if (!controller.signal.aborted) {
+          setLoading(false);
+          setLoadingMore(false);
+        }
       }
     },
     [filters.minScore, filters.maxScore, filters.site, filters.search, filters.status]
@@ -50,6 +67,8 @@ export function useJobs(filters: Filters) {
   useEffect(() => {
     offsetRef.current = 0;
     fetchJobs(true);
+    // Clean up any in-flight request when the hook unmounts or filters change
+    return () => abortRef.current?.abort();
   }, [fetchJobs]);
 
   const loadMore = useCallback(() => {

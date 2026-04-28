@@ -26,7 +26,10 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       target: development
-    command: sh -c "npm install && npm run dev"
+    # INF-022: rely on the Dockerfile's `deps` stage for installs. Running
+    # `npm install` on every container start was both slow and could drift
+    # against the lockfile that `npm ci` baked into the image.
+    command: npm run dev
     ports:
       - "3000:3000"
     volumes:

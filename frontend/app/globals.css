@@ -1,39 +1,63 @@
 @import "tailwindcss";
 
-/* ── Void Design System ───────────────────────��───────────────────────────── */
+/* ── Void Design System ───────────────────────────────────────────────────── */
 
 @theme {
   /* Backgrounds */
-  --color-void-bg:       #07080d;
-  --color-void-surface:  #0e1117;
-  --color-void-raised:   #161b27;
+  --color-void-bg:       #0A0A0F;
+  --color-void-surface:  #14141C;
+  --color-void-raised:   #1E1E2A;
 
   /* Borders */
-  --color-void-border:   #1e2537;
-  --color-void-border-subtle: #131924;
+  --color-void-border:   #2A2A38;
+  --color-void-border-subtle: #1E1E2A;
 
-  /* Accents */
-  --color-void-accent:   #6366f1;
-  --color-void-success:  #10b981;
-  --color-void-warning:  #f59e0b;
-  --color-void-danger:   #ef4444;
-  --color-void-teal:     #14b8a6;
+  /* Accents — desaturated periwinkle replaces tailwind indigo-500 */
+  --color-void-accent:        #7C7CF5;
+  --color-void-accent-hover:  #9494FF;
+
+  /* "This-is-the-one" gold — score≥9 only, intentionally distinct from brand accent */
+  --color-void-gold: #D8A24A;
+
+  /* Status colors (kept for Tailwind utilities — bg-void-success, etc.) */
+  --color-void-success:  #10B981;
+  --color-void-warning:  #D8A24A;
+  --color-void-danger:   #EF4444;
+  --color-void-teal:     #14B8A6;
 
   /* Text */
-  --color-void-text:     #e2e8f0;
-  --color-void-muted:    #64748b;
-  --color-void-subtle:   #334155;
+  --color-void-text:     #E2E8F0;
+  --color-void-muted:    #6B6B7A;
+  --color-void-subtle:   #4A4A55;
 
-  /* Score colors */
-  --color-score-9:  #6366f1;
-  --color-score-8:  #10b981;
-  --color-score-7:  #14b8a6;
-  --color-score-6:  #f59e0b;
-  --color-score-low: #475569;
+  /* Score color scale — earned, distinctive */
+  --color-score-low:  #6B7280; /* score 1-4: muted slate */
+  --color-score-6:    #D8A24A; /* score 5-6: warm-leaning amber (NOT gold) */
+  --color-score-7:    #14B8A6; /* score 7:   teal */
+  --color-score-8:    #10B981; /* score 8:   emerald */
+  --color-score-9:    #D8A24A; /* score 9-10: distinctive gold (matches --void-gold) */
 
   /* Fonts */
-  --font-sans: var(--font-inter), system-ui, sans-serif;
-  --font-mono: var(--font-jetbrains-mono), "Fira Code", "Cascadia Code", monospace;
+  --font-sans:    var(--font-geist-sans), system-ui, sans-serif;
+  --font-display: var(--font-instrument-serif), Georgia, serif;
+  --font-mono:    var(--font-jetbrains-mono), "Fira Code", "Cascadia Code", monospace;
+}
+
+/* ── Plain CSS variables (for arbitrary values, gradients, glows) ────────── */
+
+:root {
+  /* Brand accents (mirror the theme tokens for raw CSS use) */
+  --void-accent:       #7C7CF5;
+  --void-accent-hover: #9494FF;
+  --void-gold:         #D8A24A;
+  --void-gold-glow:    rgba(216, 162, 74, 0.45);
+
+  /* Motion vocabulary */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 360ms;
+  --ease-out-quart: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-spring:    cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 /* ── Base ─────────────────────────────────────────────────────────────────── */
@@ -45,9 +69,25 @@ html {
 body {
   background-color: var(--color-void-bg);
   color: var(--color-void-text);
+  font-family: var(--font-sans);
 }
 
-/* ── Scrollbars ───────────────────────────────────────────────��───────────── */
+/* ── Editorial display type (opt-in via class) ───────────────────────────── */
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}
+
+/* ── Per-page accent bands (DES-024) ─────────────────────────────────────── */
+/* 2px top border that signals page identity. Apply to top-level container. */
+
+.page-accent-jobs     { border-top: 2px solid var(--void-accent); }       /* periwinkle */
+.page-accent-pipeline { border-top: 2px solid #14B8A6; }                  /* teal */
+.page-accent-profile  { border-top: 2px solid #6B7280; }                  /* neutral slate */
+.page-accent-setup    { border-top: 2px solid var(--void-gold); }         /* warm amber */
+
+/* ── Scrollbars ───────────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar        { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track  { background: var(--color-void-surface); }
@@ -93,12 +133,38 @@ body {
   to   { transform: translateY(0);   opacity: 1; }
 }
 
+/* DES-025 — Motion vocabulary keyframes */
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-ring {
+  0%, 100% { box-shadow: inset 0 0 0 4px rgba(216, 162, 74, 0); }
+  50%      { box-shadow: inset 0 0 0 4px rgba(216, 162, 74, 0.25); }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-2px); }
+  75%      { transform: translateX(2px); }
+}
+
 .animate-fade-in        { animation: fade-in 0.18s ease-out; }
 .animate-slide-in-right { animation: slide-in-right 0.22s ease-out; }
 .animate-spin-slow      { animation: spin-slow 1.4s linear infinite; }
 .animate-pop-in         { animation: pop-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
 .animate-count-up       { animation: count-up 0.5s 0.15s ease-out backwards; }
 .animate-sparkle        { animation: sparkle-float 1.6s ease-out infinite; }
+
+/* DES-025 — Reusable motion utilities */
+.animate-fade-up    { animation: fade-up var(--motion-base) var(--ease-out-quart) both; }
+.animate-pulse-ring { animation: pulse-ring 2s var(--ease-out-quart) infinite; }
+.animate-shake      { animation: shake 100ms var(--ease-out-quart); }
+
+/* Stagger helper — pair with inline `style={{ '--i': index }}` on children */
+.stagger-100 > * { animation-delay: calc(var(--i, 0) * 60ms); }
 
 /* ── Skeleton loader ──────────────────────────────────────────────────────── */
 
@@ -133,7 +199,7 @@ body {
   flex-shrink: 0;
 }
 
-/* ── Log terminal ──────────────────────────────────────────────────────────�� */
+/* ── Log terminal ─────────────────────────────────────────────────────────── */
 
 .log-terminal {
   background: #050608;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import type { Job } from "@/lib/types";
 import { ScoreBadge } from "./ScoreBadge";
 import { getJob, saveResume, dismissJob, restoreJob, markApplied, markStatus, downloadResume, downloadCover, tailorJob, coverJob, favoriteJob } from "@/lib/api";
@@ -13,18 +13,61 @@ interface JobDetailDrawerProps {
   onJobUpdated: () => void;
 }
 
+const TABS = ["description", "resume", "cover"] as const;
+type Tab = (typeof TABS)[number];
+
+/**
+ * Score → CSS color value. Mirrors ScoreBadge so the avatar's left border
+ * inside the score-ring picks up a related accent.
+ */
+function scoreColor(score: number | null): string {
+  if (!score) return "var(--color-void-border)";
+  if (score >= 9) return "var(--void-gold)";
+  if (score >= 8) return "#10B981";
+  if (score >= 7) return "#14B8A6";
+  if (score >= 5) return "#F59E0B";
+  return "#64748B";
+}
+
+function HeaderAvatar({ name, score }: { name: string; score: number | null }) {
+  const safe = name?.trim() || "?";
+  const words = safe.split(/\s+/).filter(Boolean);
+  const monogram =
+    words.length >= 2
+      ? (words[0][0] + words[1][0]).toUpperCase()
+      : safe.slice(0, 2).toUpperCase();
+
+  return (
+    <div
+      className="
+        w-6 h-6 rounded-md bg-void-raised
+        flex items-center justify-center shrink-0
+        text-void-text border border-void-border
+      "
+      style={{ borderLeft: `2px solid ${scoreColor(score)}` }}
+      aria-hidden
+    >
+      <span className="font-display text-[10px] leading-none tracking-tight">
+        {monogram}
+      </span>
+    </div>
+  );
+}
+
 export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetailDrawerProps) {
   const toast = useToast();
   const { waitForTask } = useTaskProgress();
   const [job, setJob] = useState<Job | null>(null);
   const [loading, setLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"description" | "resume" | "cover">("description");
+  const [activeTab, setActiveTab] = useState<Tab>("description");
   const [editingResume, setEditingResume] = useState(false);
   const [resumeText, setResumeText] = useState("");
   const [saving, setSaving] = useState(false);
   const [generatingResume, setGeneratingResume] = useState(false);
   const [generatingCover, setGeneratingCover] = useState(false);
   const [favorited, setFavorited] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (job) setFavorited(!!job.favorited);
@@ -43,6 +86,18 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
   useEffect(() => {
     if (job?.resume_text) setResumeText(job.resume_text);
   }, [job]);
+
+  // Close more-menu on outside click
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [moreOpen]);
 
   const handleSaveResume = useCallback(async () => {
     if (!job) return;
@@ -71,6 +126,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
 
   const handleGenerateResume = useCallback(async () => {
     if (!job) return;
+    setMoreOpen(false);
     setGeneratingResume(true);
     try {
       const { task_id } = await tailorJob(job.url_encoded);
@@ -87,6 +143,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
 
   const handleGenerateCover = useCallback(async () => {
     if (!job) return;
+    setMoreOpen(false);
     setGeneratingCover(true);
     try {
       const { task_id } = await coverJob(job.url_encoded);
@@ -103,6 +160,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
 
   const handleDismiss = useCallback(async () => {
     if (!job) return;
+    setMoreOpen(false);
     try {
       await dismissJob(job.url_encoded);
       toast("Job dismissed");
@@ -115,6 +173,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
 
   const handleMarkApplied = useCallback(async () => {
     if (!job) return;
+    setMoreOpen(false);
     try {
       await markApplied(job.url_encoded);
       toast("Marked as applied");
@@ -135,7 +194,23 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
     }
   }, [job, toast, onJobUpdated]);
 
+  const handleRestore = useCallback(async () => {
+    if (!job) return;
+    setMoreOpen(false);
+    try {
+      await restoreJob(job.url_encoded);
+      onJobUpdated();
+    } catch {
+      toast("Failed to restore", false);
+    }
+  }, [job, onJobUpdated, toast]);
+
   if (!encodedUrl) return null;
+
+  const tabIndex = TABS.indexOf(activeTab);
+  const applyHref = job?.application_url && job.application_url !== job.url
+    ? job.application_url
+    : job?.url;
 
   return (
     <>
@@ -151,20 +226,38 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
         w-full max-w-2xl bg-void-surface border-l border-void-border
         flex flex-col animate-slide-in-right overflow-hidden
       ">
-        {/* Header */}
+        {/* Header — large ScoreBadge with overlapping company avatar */}
         <div className="flex items-start gap-4 p-5 border-b border-void-border shrink-0">
           {loading ? (
             <div className="flex-1 space-y-2">
-              <div className="skeleton h-5 w-3/4" />
+              <div className="skeleton h-7 w-3/4" />
               <div className="skeleton h-4 w-1/2" />
             </div>
           ) : job ? (
             <>
-              <ScoreBadge score={job.fit_score} size="lg" />
+              <div className="relative shrink-0">
+                <ScoreBadge score={job.fit_score} size="xl" />
+                {/* Bottom-right overlapping company avatar */}
+                <div className="absolute -bottom-1 -right-1">
+                  <HeaderAvatar name={job.company || "?"} score={job.fit_score} />
+                </div>
+              </div>
               <div className="flex-1 min-w-0">
-                <h2 className="text-base font-semibold text-void-text leading-snug">{job.title}</h2>
-                <p className="text-sm text-void-muted mt-0.5">{job.company} · {job.location}</p>
-                {job.salary && <p className="text-xs text-void-success mt-1 font-mono">{job.salary}</p>}
+                <h2 className="font-display text-2xl leading-tight text-void-text">
+                  {job.title}
+                </h2>
+                <p className="font-mono text-[11px] uppercase tracking-wider text-void-muted mt-1.5 truncate">
+                  {job.company}
+                  {job.location && (
+                    <>
+                      <span className="mx-1.5 opacity-60">•</span>
+                      <span className="normal-case tracking-normal">{job.location}</span>
+                    </>
+                  )}
+                </p>
+                {job.salary && (
+                  <p className="text-xs text-void-success mt-1 font-mono">{job.salary}</p>
+                )}
               </div>
             </>
           ) : null}
@@ -198,26 +291,56 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
           </div>
         )}
 
-        {/* Tabs */}
+        {/* Segmented tab control — pill background + sliding indicator */}
         {job && (
-          <div className="flex border-b border-void-border shrink-0 px-5">
-            {(["description", "resume", "cover"] as const).map((tab) => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`
-                  py-3 px-4 text-sm font-medium border-b-2 -mb-px transition-colors
-                  ${activeTab === tab
-                    ? "border-void-accent text-void-accent"
-                    : "border-transparent text-void-muted hover:text-void-text"
-                  }
-                `}
-              >
-                {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                {tab === "resume" && !job.resume_text && " —"}
-                {tab === "cover" && !job.cover_letter_text && " —"}
-              </button>
-            ))}
+          <div className="px-5 pt-4 pb-3 shrink-0">
+            <div
+              role="tablist"
+              aria-label="Job detail sections"
+              className="
+                relative inline-flex p-0.5 rounded-full
+                bg-void-raised border border-void-border
+              "
+            >
+              {/* Sliding indicator */}
+              <span
+                aria-hidden
+                className="
+                  absolute top-0.5 bottom-0.5 rounded-full
+                  bg-void-surface border border-void-border
+                  shadow-sm transition-transform duration-200
+                "
+                style={{
+                  width: `calc((100% - 4px) / ${TABS.length})`,
+                  transform: `translateX(calc(${tabIndex} * 100%))`,
+                  left: 2,
+                }}
+              />
+              {TABS.map((tab) => {
+                const empty =
+                  (tab === "resume" && !job.resume_text) ||
+                  (tab === "cover" && !job.cover_letter_text);
+                return (
+                  <button
+                    key={tab}
+                    role="tab"
+                    aria-selected={activeTab === tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={`
+                      relative z-10 px-4 py-1.5 rounded-full text-xs font-medium
+                      transition-colors min-w-[88px] capitalize
+                      ${activeTab === tab
+                        ? "text-void-text"
+                        : "text-void-muted hover:text-void-text"
+                      }
+                    `}
+                  >
+                    {tab}
+                    {empty && <span className="ml-1 opacity-40">—</span>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 
@@ -232,17 +355,20 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
           )}
 
           {!loading && job && activeTab === "description" && (
-            <div className="p-5">
+            <div className="px-5 pb-5">
               {job.score_reasoning && (
                 <div className="mb-5 p-3 rounded-lg bg-void-raised border border-void-border">
-                  <p className="text-xs font-medium text-void-muted mb-1">Score Reasoning</p>
+                  <p className="text-xs font-medium text-void-muted mb-1">Score reasoning</p>
                   <p className="text-sm text-void-text leading-relaxed">{job.score_reasoning}</p>
                 </div>
               )}
               {job.full_description ? (
-                <pre className="text-xs text-void-muted whitespace-pre-wrap font-mono leading-relaxed">
+                /* Editorial prose — display serif at base size, generous leading,
+                   capped at prose width. The description is the highest-read
+                   surface in the drawer; it deserves real typography. */
+                <article className="font-display text-base leading-[1.65] text-void-text max-w-prose whitespace-pre-wrap">
                   {job.full_description}
-                </pre>
+                </article>
               ) : (
                 <p className="text-sm text-void-muted italic">No description available.</p>
               )}
@@ -273,7 +399,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                   <button
                     onClick={handleGenerateResume}
                     disabled={generatingResume || !!job.closed}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover disabled:opacity-50 transition-colors"
                   >
                     {generatingResume ? (
                       <>
@@ -281,7 +407,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                         Generating…
                       </>
                     ) : (
-                      "Generate Tailored Resume"
+                      "Generate tailored resume"
                     )}
                   </button>
                 </div>
@@ -292,7 +418,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
           {!loading && job && activeTab === "cover" && (
             <div className="p-5">
               {job.cover_letter_text ? (
-                <pre className="text-sm text-void-text whitespace-pre-wrap leading-relaxed">
+                <pre className="text-sm text-void-text whitespace-pre-wrap leading-relaxed font-display">
                   {job.cover_letter_text}
                 </pre>
               ) : (
@@ -301,7 +427,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                   <button
                     onClick={handleGenerateCover}
                     disabled={generatingCover || !!job.closed}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover disabled:opacity-50 transition-colors"
                   >
                     {generatingCover ? (
                       <>
@@ -309,7 +435,7 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
                         Generating…
                       </>
                     ) : (
-                      "Generate Cover Letter"
+                      "Generate cover letter"
                     )}
                   </button>
                 </div>
@@ -318,138 +444,183 @@ export function JobDetailDrawer({ encodedUrl, onClose, onJobUpdated }: JobDetail
           )}
         </div>
 
-        {/* Footer actions */}
+        {/* Footer — split-button: primary Tailor + chevron menu for the rest */}
         {job && (
-          <div className="flex items-center gap-2 p-4 border-t border-void-border shrink-0 flex-wrap">
+          <div className="flex items-center gap-2 p-4 border-t border-void-border shrink-0">
+            {/* Resume-tab inline edit/save (kept inline because it's a tab-local
+                action — moving it into the more-menu would hide an in-context
+                control). */}
             {activeTab === "resume" && job.resume_text && (
               editingResume ? (
                 <>
                   <button
                     onClick={handleSaveResume}
                     disabled={saving}
-                    className="px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors"
+                    className="px-3 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover disabled:opacity-50 transition-colors"
                   >
-                    {saving ? "Saving…" : "Save Resume"}
+                    {saving ? "Saving…" : "Save"}
                   </button>
                   <button
                     onClick={() => { setEditingResume(false); setResumeText(job.resume_text!); }}
-                    className="px-4 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+                    className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
                   >
                     Cancel
                   </button>
                 </>
               ) : (
-                <>
-                  <button
-                    onClick={() => setEditingResume(true)}
-                    className="px-4 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
-                  >
-                    Edit
-                  </button>
-                  <button
-                    onClick={handleGenerateResume}
-                    disabled={generatingResume || !!job.closed}
-                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text disabled:opacity-50 transition-colors"
-                  >
-                    {generatingResume ? (
-                      <>
-                        <span className="w-3.5 h-3.5 border-2 border-void-muted/30 border-t-void-muted rounded-full animate-spin" />
-                        Regenerating…
-                      </>
-                    ) : "Regenerate"}
-                  </button>
-                </>
+                <button
+                  onClick={() => setEditingResume(true)}
+                  className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+                >
+                  Edit
+                </button>
               )
             )}
 
-            {activeTab === "cover" && job.cover_letter_text && (
+            {/* Right-aligned split button group */}
+            <div className="ml-auto flex items-center">
+              {/* Primary action — Tailor */}
               <button
-                onClick={handleGenerateCover}
-                disabled={generatingCover}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text disabled:opacity-50 transition-colors"
+                onClick={handleGenerateResume}
+                disabled={generatingResume || !!job.closed}
+                className="
+                  flex items-center gap-2 px-4 py-2
+                  rounded-l-lg border border-void-accent/40 bg-void-accent/15
+                  text-sm font-medium text-void-accent
+                  hover:bg-void-accent/25 disabled:opacity-50 transition-colors
+                "
               >
-                {generatingCover ? (
+                {generatingResume ? (
                   <>
-                    <span className="w-3.5 h-3.5 border-2 border-void-muted/30 border-t-void-muted rounded-full animate-spin" />
-                    Regenerating…
+                    <span className="w-3.5 h-3.5 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+                    Tailoring…
                   </>
-                ) : "Regenerate"}
+                ) : (
+                  <>
+                    <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                      <path d="M11.013 1.427a1.75 1.75 0 0 1 2.474 0l1.086 1.086a1.75 1.75 0 0 1 0 2.474l-8.61 8.61c-.21.21-.47.364-.756.445l-3.251.93a.75.75 0 0 1-.927-.928l.929-3.25c.081-.286.235-.547.445-.758l8.61-8.61Zm.176 4.823L9.75 4.81l-6.286 6.287a.253.253 0 0 0-.064.108l-.558 1.953 1.953-.558a.253.253 0 0 0 .108-.064Zm1.238-3.763a.25.25 0 0 0-.354 0L10.811 3.75l1.439 1.44 1.263-1.263a.25.25 0 0 0 0-.354Z" />
+                    </svg>
+                    {job.resume_text ? "Regenerate" : "Tailor"}
+                  </>
+                )}
               </button>
-            )}
 
-            <a
-              href={job.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
-            >
-              View Job
-              <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
-                <path fillRule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5Z" clipRule="evenodd"/>
-                <path fillRule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5Z" clipRule="evenodd"/>
-              </svg>
-            </a>
-            {job.application_url && job.application_url !== job.url && (
-              <a
-                href={job.application_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 px-3 py-2 rounded-lg bg-void-accent/10 border border-void-accent/30 text-sm text-void-accent hover:bg-void-accent/20 transition-colors"
-              >
-                Apply Direct
-                <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
-                  <path fillRule="evenodd" d="M8.636 3.5a.5.5 0 0 0-.5-.5H1.5A1.5 1.5 0 0 0 0 4.5v10A1.5 1.5 0 0 0 1.5 16h10a1.5 1.5 0 0 0 1.5-1.5V7.864a.5.5 0 0 0-1 0V14.5a.5.5 0 0 1-.5.5h-10a.5.5 0 0 1-.5-.5v-10a.5.5 0 0 1 .5-.5h6.636a.5.5 0 0 0 .5-.5Z" clipRule="evenodd"/>
-                  <path fillRule="evenodd" d="M16 .5a.5.5 0 0 0-.5-.5h-5a.5.5 0 0 0 0 1h3.793L6.146 9.146a.5.5 0 1 0 .708.708L15 1.707V5.5a.5.5 0 0 0 1 0v-5Z" clipRule="evenodd"/>
-                </svg>
-              </a>
-            )}
-            {job.has_pdf && (
-              <button
-                type="button"
-                onClick={() => downloadResume(job.url_encoded, job.title).catch((e) => toast(e?.message || "Download failed", false))}
-                className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors">
-                Download PDF
-              </button>
-            )}
-            {job.has_cover_pdf && (
-              <button
-                type="button"
-                onClick={() => downloadCover(job.url_encoded, job.title).catch((e) => toast(e?.message || "Download failed", false))}
-                className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors">
-                Cover PDF
-              </button>
-            )}
-
-            <div className="ml-auto flex items-center gap-2">
-              {job.apply_status === "dismissed" ? (
-                <button onClick={() => restoreJob(job.url_encoded).then(onJobUpdated)}
-                  className="px-3 py-2 rounded-lg border border-void-success/40 text-sm text-void-success hover:bg-void-success/10 transition-colors">
-                  Restore
+              {/* Chevron — opens the rest of the actions */}
+              <div className="relative" ref={moreRef}>
+                <button
+                  onClick={() => setMoreOpen((m) => !m)}
+                  aria-haspopup="menu"
+                  aria-expanded={moreOpen}
+                  title="More actions"
+                  className="
+                    px-2 py-2 rounded-r-lg border border-l-0 border-void-accent/40
+                    bg-void-accent/15 text-void-accent
+                    hover:bg-void-accent/25 transition-colors
+                  "
+                >
+                  <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                    <path d="M3.22 6.22a.75.75 0 0 1 1.06 0L8 9.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L3.22 7.28a.75.75 0 0 1 0-1.06Z" />
+                  </svg>
                 </button>
-              ) : (
-                <button onClick={handleDismiss}
-                  className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-danger hover:border-void-danger/40 transition-colors">
-                  Dismiss
-                </button>
-              )}
 
-              {job.apply_status !== "applied" && (
-                <button onClick={handleMarkApplied}
-                  className="px-4 py-2 rounded-lg bg-void-success/15 border border-void-success/40 text-sm text-void-success hover:bg-void-success/25 transition-colors">
-                  Mark Applied
-                </button>
-              )}
+                {moreOpen && (
+                  <div
+                    role="menu"
+                    className="
+                      absolute right-0 bottom-full mb-2 z-20
+                      min-w-[220px] rounded-lg border border-void-border bg-void-surface
+                      shadow-lg shadow-black/40 py-1
+                      animate-fade-up
+                    "
+                  >
+                    {applyHref && (
+                      <a
+                        role="menuitem"
+                        href={applyHref}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setMoreOpen(false)}
+                        className="block px-3 py-1.5 text-sm text-void-text hover:bg-void-raised"
+                      >
+                        Apply on site ↗
+                      </a>
+                    )}
 
-              {job.apply_status === "applied" && (
-                <div className="flex gap-1">
-                  {["interview", "offer", "rejected"].map((s) => (
-                    <button key={s} onClick={() => handleMarkStatus(s)}
-                      className="px-2.5 py-1.5 rounded border border-void-border text-xs text-void-muted hover:text-void-text transition-colors capitalize">
-                      {s}
+                    <button
+                      role="menuitem"
+                      onClick={handleGenerateCover}
+                      disabled={generatingCover || !!job.closed}
+                      className="w-full text-left px-3 py-1.5 text-sm text-void-text hover:bg-void-raised disabled:opacity-50"
+                    >
+                      {job.cover_letter_text ? "Regenerate cover letter" : "Generate cover letter"}
                     </button>
-                  ))}
-                </div>
-              )}
+
+                    {job.has_pdf && (
+                      <button
+                        role="menuitem"
+                        onClick={() => { setMoreOpen(false); downloadResume(job.url_encoded, job.title).catch((e) => toast(e instanceof Error ? e.message : "Download failed", false)); }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-void-text hover:bg-void-raised"
+                      >
+                        Download resume PDF
+                      </button>
+                    )}
+                    {job.has_cover_pdf && (
+                      <button
+                        role="menuitem"
+                        onClick={() => { setMoreOpen(false); downloadCover(job.url_encoded, job.title).catch((e) => toast(e instanceof Error ? e.message : "Download failed", false)); }}
+                        className="w-full text-left px-3 py-1.5 text-sm text-void-text hover:bg-void-raised"
+                      >
+                        Download cover PDF
+                      </button>
+                    )}
+
+                    <div className="my-1 border-t border-void-border" />
+
+                    {job.apply_status !== "applied" && (
+                      <button
+                        role="menuitem"
+                        onClick={handleMarkApplied}
+                        className="w-full text-left px-3 py-1.5 text-sm text-void-success hover:bg-void-success/10"
+                      >
+                        Mark applied
+                      </button>
+                    )}
+
+                    {job.apply_status === "applied" && (
+                      <>
+                        {(["interview", "offer", "rejected"] as const).map((s) => (
+                          <button
+                            key={s}
+                            role="menuitem"
+                            onClick={() => { setMoreOpen(false); handleMarkStatus(s); }}
+                            className="w-full text-left px-3 py-1.5 text-sm text-void-text hover:bg-void-raised capitalize"
+                          >
+                            Mark {s}
+                          </button>
+                        ))}
+                      </>
+                    )}
+
+                    {job.apply_status === "dismissed" ? (
+                      <button
+                        role="menuitem"
+                        onClick={handleRestore}
+                        className="w-full text-left px-3 py-1.5 text-sm text-void-success hover:bg-void-success/10"
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        role="menuitem"
+                        onClick={handleDismiss}
+                        className="w-full text-left px-3 py-1.5 text-sm text-void-danger hover:bg-void-danger/10"
+                      >
+                        Dismiss
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

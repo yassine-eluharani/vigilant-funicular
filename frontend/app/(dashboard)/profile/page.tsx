@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { getProfile, updateProfile, getSearches, updateSearches, getEmployers, updateEmployers, getResumeText, updateResumeText, uploadResumePdf, getMe, createCheckoutSession, createBillingPortalSession } from "@/lib/api";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
+import { useSearchParams } from "next/navigation";
+import { getProfile, updateProfile, getSearches, updateSearches, getResumeText, updateResumeText, uploadResumePdf, getMe, createCheckoutSession, createBillingPortalSession } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
-import type { Profile, UserInfo } from "@/lib/types";
+import type { Profile, SearchConfig, SearchLocation, SearchQuery, UserInfo } from "@/lib/types";
 
-type Tab = "profile" | "searches" | "employers" | "resume" | "billing";
+type Tab = "profile" | "searches" | "resume" | "billing";
 
 // ── Profile tab ───────────────────────────────────────────────────────────────
 
@@ -83,9 +84,6 @@ function ProfileTab() {
 
 const ALL_BOARDS = ["indeed", "linkedin", "glassdoor", "zip_recruiter", "google"];
 
-interface SearchQuery { query: string; tier: 1 | 2 | 3 }
-interface SearchLocation { location: string; remote: boolean }
-
 function TagInput({ tags, onAdd, onRemove, placeholder }: {
   tags: string[];
   onAdd: (v: string) => void;
@@ -125,7 +123,7 @@ function SearchesTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // Parsed state
+  // Parsed state — every field maps to an explicit `SearchConfig` key.
   const [queries, setQueries] = useState<SearchQuery[]>([]);
   const [locations, setLocations] = useState<SearchLocation[]>([]);
   const [boards, setBoards] = useState<string[]>([]);
@@ -135,28 +133,22 @@ function SearchesTab() {
   const [excludeTitles, setExcludeTitles] = useState<string[]>([]);
   const [acceptPatterns, setAcceptPatterns] = useState<string[]>([]);
   const [rejectPatterns, setRejectPatterns] = useState<string[]>([]);
-  // Preserve unknown keys so we don't lose them on save
-  const [extra, setExtra] = useState<Record<string, unknown>>({});
+  // Local state for the "add a new query" input — replaces the previous
+  // `document.getElementById("new-query")` lookup.
+  const [newQuery, setNewQuery] = useState("");
 
   useEffect(() => {
     getSearches()
-      .then(d => {
-        const raw = d as Record<string, unknown>;
-        setQueries((raw.queries as SearchQuery[] | undefined) ?? []);
-        setLocations((raw.locations as SearchLocation[] | undefined) ?? []);
-        setBoards((raw.boards as string[] | undefined) ?? []);
-        setCountry((raw.country as string | undefined) ?? "USA");
-        const defaults = (raw.defaults as Record<string, number> | undefined) ?? {};
-        setHoursOld(defaults.hours_old ?? 72);
-        setResultsPerSite(defaults.results_per_site ?? 100);
-        setExcludeTitles((raw.exclude_titles as string[] | undefined) ?? []);
-        const loc = (raw.location as Record<string, string[]> | undefined) ?? {};
-        setAcceptPatterns(loc.accept_patterns ?? []);
-        setRejectPatterns(loc.reject_patterns ?? []);
-        // Preserve unrecognised keys
-        const { queries: _q, locations: _l, boards: _b, country: _c, defaults: _d,
-                exclude_titles: _e, location: _loc, ...rest } = raw;
-        setExtra(rest);
+      .then((cfg: SearchConfig) => {
+        setQueries(cfg.queries ?? []);
+        setLocations(cfg.locations ?? []);
+        setBoards(cfg.boards ?? []);
+        setCountry(cfg.country ?? "USA");
+        setHoursOld(cfg.defaults?.hours_old ?? 72);
+        setResultsPerSite(cfg.defaults?.results_per_site ?? 100);
+        setExcludeTitles(cfg.exclude_titles ?? []);
+        setAcceptPatterns(cfg.location?.accept_patterns ?? []);
+        setRejectPatterns(cfg.location?.reject_patterns ?? []);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -165,8 +157,7 @@ function SearchesTab() {
   const save = async () => {
     setSaving(true);
     try {
-      await updateSearches({
-        ...extra,
+      const payload: SearchConfig = {
         queries,
         locations,
         boards,
@@ -174,7 +165,8 @@ function SearchesTab() {
         defaults: { results_per_site: resultsPerSite, hours_old: hoursOld },
         exclude_titles: excludeTitles,
         location: { accept_patterns: acceptPatterns, reject_patterns: rejectPatterns },
-      });
+      };
+      await updateSearches(payload);
       toast("Search config saved");
     } catch {
       toast("Failed to save", false);
@@ -189,6 +181,13 @@ function SearchesTab() {
   const addQuery = (query: string, tier: 1 | 2 | 3 = 2) => {
     if (!queries.some(q => q.query.toLowerCase() === query.toLowerCase()))
       setQueries(prev => [...prev, { query, tier }]);
+  };
+
+  const submitNewQuery = () => {
+    const trimmed = newQuery.trim();
+    if (!trimmed) return;
+    addQuery(trimmed);
+    setNewQuery("");
   };
 
   const removeQuery = (query: string) =>
@@ -239,22 +238,18 @@ function SearchesTab() {
         </div>
         <div className="flex gap-2">
           <input
-            id="new-query"
+            value={newQuery}
+            onChange={e => setNewQuery(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") { e.preventDefault(); submitNewQuery(); }
+            }}
             className="flex-1 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text placeholder:text-void-subtle focus:outline-none focus:border-void-accent/60 transition-colors"
             placeholder="Add a search query…"
-            onKeyDown={e => {
-              if (e.key === "Enter") {
-                const v = (e.target as HTMLInputElement).value.trim();
-                if (v) { addQuery(v); (e.target as HTMLInputElement).value = ""; }
-              }
-            }}
           />
           <button
-            onClick={() => {
-              const el = document.getElementById("new-query") as HTMLInputElement;
-              if (el.value.trim()) { addQuery(el.value.trim()); el.value = ""; }
-            }}
-            className="px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+            onClick={submitNewQuery}
+            disabled={!newQuery.trim()}
+            className="px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-muted hover:text-void-text disabled:opacity-30 transition-colors"
           >Add</button>
         </div>
       </section>
@@ -360,103 +355,6 @@ function SectionHeader({ title, hint }: { title: string; hint?: string }) {
     <div className="mb-3">
       <h3 className="text-xs font-medium text-void-muted uppercase tracking-wider">{title}</h3>
       {hint && <p className="text-xs text-void-subtle mt-0.5">{hint}</p>}
-    </div>
-  );
-}
-
-// ── Employers tab ─────────────────────────────────────────────────────────────
-
-function EmployersTab() {
-  const toast = useToast();
-  const [employers, setEmployers] = useState<Record<string, Record<string, unknown>>>({});
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [filter, setFilter] = useState("");
-
-  useEffect(() => {
-    getEmployers()
-      .then(d => setEmployers(d as Record<string, Record<string, unknown>>))
-      .catch(() => setEmployers({}))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const toggleEnabled = (key: string) => {
-    setEmployers(e => ({
-      ...e,
-      [key]: { ...e[key], enabled: !e[key].enabled }
-    }));
-  };
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      await updateEmployers(employers);
-      toast("Employers saved");
-    } catch {
-      toast("Failed to save", false);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const filtered = Object.entries(employers).filter(([key]) =>
-    key.toLowerCase().includes(filter.toLowerCase()) ||
-    String((employers[key] as Record<string, unknown>).name ?? "").toLowerCase().includes(filter.toLowerCase())
-  );
-
-  if (loading) return <div className="p-6"><div className="skeleton h-96" /></div>;
-
-  return (
-    <div className="p-6">
-      <div className="mb-4 p-3 rounded-lg bg-void-raised border border-void-border text-xs text-void-muted leading-relaxed">
-        <span className="text-void-text font-medium">Workday direct scraping</span>
-        {" — "}Enable companies below to have their jobs scraped directly from their Workday career portals, bypassing generic job boards. Disabled by default; enable only the ones you're interested in.
-      </div>
-      <div className="flex items-center gap-3 mb-4">
-        <input
-          type="text"
-          placeholder="Filter employers…"
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          className="flex-1 px-3 py-1.5 rounded-lg bg-void-raised border border-void-border text-sm text-void-text placeholder:text-void-muted focus:outline-none focus:border-void-accent/60 transition-colors"
-        />
-        <span className="text-xs text-void-muted">{filtered.length} of {Object.keys(employers).length}</span>
-      </div>
-
-      <div className="border border-void-border rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-void-border bg-void-raised">
-              <th className="text-left px-4 py-2.5 text-xs font-medium text-void-muted">Key</th>
-              <th className="text-left px-4 py-2.5 text-xs font-medium text-void-muted">Name</th>
-              <th className="text-left px-4 py-2.5 text-xs font-medium text-void-muted">Tenant</th>
-              <th className="text-center px-4 py-2.5 text-xs font-medium text-void-muted">Enabled</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map(([key, emp]) => (
-              <tr key={key} className="border-b border-void-border/50 hover:bg-void-raised/40 transition-colors">
-                <td className="px-4 py-2.5 text-void-muted font-mono text-xs">{key}</td>
-                <td className="px-4 py-2.5 text-void-text">{String(emp.name ?? "")}</td>
-                <td className="px-4 py-2.5 text-void-muted font-mono text-xs">{String(emp.tenant ?? "")}</td>
-                <td className="px-4 py-2.5 text-center">
-                  <input
-                    type="checkbox"
-                    checked={!!emp.enabled}
-                    onChange={() => toggleEnabled(key)}
-                    className="accent-void-accent"
-                  />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <button onClick={save} disabled={saving}
-        className="mt-4 px-6 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 disabled:opacity-50 transition-colors">
-        {saving ? "Saving…" : "Save Employers"}
-      </button>
     </div>
   );
 }
@@ -725,45 +623,123 @@ function UsageStat({ label, used, limit, isPro }: { label: string; used: number;
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "profile",   label: "Profile" },
-  { id: "searches",  label: "Searches" },
-  { id: "employers", label: "Employers" },
-  { id: "resume",    label: "Resume" },
-  { id: "billing",   label: "Billing" },
+interface TabDef {
+  id: Tab;
+  label: string;
+  icon: ReactNode;
+}
+
+const PROFILE_ICON = (
+  <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5" aria-hidden>
+    <path fillRule="evenodd" d="M10 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm-7 9a7 7 0 1 1 14 0H3Z" clipRule="evenodd" />
+  </svg>
+);
+const SEARCH_ICON = (
+  <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5" aria-hidden>
+    <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 1 0 3.6 9.7l3.1 3.1a1 1 0 0 0 1.4-1.4l-3.1-3.1A5.5 5.5 0 0 0 9 3.5ZM5.5 9a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0Z" clipRule="evenodd" />
+  </svg>
+);
+const RESUME_ICON = (
+  <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5" aria-hidden>
+    <path fillRule="evenodd" d="M5 2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.41a2 2 0 0 0-.59-1.41L13.41 2.59A2 2 0 0 0 12 2H5Zm1 6a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H7a1 1 0 0 1-1-1Zm0 4a1 1 0 0 1 1-1h6a1 1 0 1 1 0 2H7a1 1 0 0 1-1-1Zm0 4a1 1 0 0 1 1-1h3a1 1 0 1 1 0 2H7a1 1 0 0 1-1-1Z" clipRule="evenodd" />
+  </svg>
+);
+const BILLING_ICON = (
+  <svg viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5" aria-hidden>
+    <path d="M2 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v1H2V6Zm0 3h16v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9Zm3 4a1 1 0 1 0 0 2h3a1 1 0 1 0 0-2H5Z" />
+  </svg>
+);
+
+const TABS: TabDef[] = [
+  { id: "profile",   label: "Profile",  icon: PROFILE_ICON },
+  { id: "searches",  label: "Searches", icon: SEARCH_ICON },
+  { id: "resume",    label: "Resume",   icon: RESUME_ICON },
+  { id: "billing",   label: "Billing",  icon: BILLING_ICON },
 ];
 
-export default function ProfilePage() {
+function ProfilePanel() {
+  const params = useSearchParams();
   const [tab, setTab] = useState<Tab>(() => {
-    if (typeof window === "undefined") return "profile";
-    const t = new URLSearchParams(window.location.search).get("tab");
-    if (t === "billing" || t === "profile" || t === "searches" || t === "employers" || t === "resume") {
+    const t = params.get("tab");
+    if (t === "billing" || t === "profile" || t === "searches" || t === "resume") {
       return t;
     }
     return "profile";
   });
 
+  // Pending-state indicators — the page header doesn't fetch profile/resume
+  // itself (each tab does), so we re-issue the cheap GETs here once on mount
+  // to know which tabs need attention. Idempotent, low cost.
+  const [pendingProfile, setPendingProfile] = useState(false);
+  const [pendingSearches, setPendingSearches] = useState(false);
+  const [pendingResume, setPendingResume] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      getProfile().catch(() => ({} as Profile)),
+      getSearches().catch(() => ({} as SearchConfig)),
+      getResumeText().catch(() => ({ text: "", exists: false })),
+    ]).then(([prof, sr, rt]) => {
+      if (cancelled) return;
+      const noName = !prof.personal?.full_name?.trim();
+      setPendingProfile(noName);
+      setPendingSearches((sr.queries ?? []).length === 0);
+      setPendingResume(!rt.text || !rt.text.trim());
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const pendingByTab: Record<Tab, boolean> = {
+    profile: pendingProfile,
+    searches: pendingSearches,
+    resume: pendingResume,
+    billing: false,
+  };
+
   return (
-    <div className="flex flex-col h-full">
+    <main className="page-accent-profile flex flex-col h-full">
       {/* Header */}
-      <div className="px-6 pt-5 border-b border-void-border shrink-0">
-        <h1 className="text-base font-semibold text-void-text mb-4">Profile & Config</h1>
-        <div className="flex gap-1">
-          {TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={`
-                px-4 py-2 rounded-t-lg text-sm font-medium border-b-2 transition-colors
-                ${tab === id
-                  ? "border-void-accent text-void-accent"
-                  : "border-transparent text-void-muted hover:text-void-text"
-                }
-              `}
-            >
-              {label}
-            </button>
-          ))}
+      <div className="px-6 pt-6 pb-0 border-b border-void-border shrink-0">
+        <h1 className="font-display text-3xl text-void-text leading-tight">
+          Profile &amp; Config
+        </h1>
+        <p className="text-sm text-void-muted mt-1 mb-5">
+          Tune the inputs that drive scoring, tailoring, and matching.
+        </p>
+
+        {/* Segmented tab strip */}
+        <div className="flex gap-1 -mb-px">
+          {TABS.map(({ id, label, icon }) => {
+            const isActive = tab === id;
+            const needsAttention = pendingByTab[id];
+            return (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className={`
+                  group flex items-center gap-2 px-4 h-10 rounded-t-lg text-sm border-b-2 transition-colors
+                  ${isActive
+                    ? "border-void-accent text-void-accent font-display"
+                    : "border-transparent text-void-muted hover:text-void-text"
+                  }
+                `}
+              >
+                <span className={isActive ? "text-void-accent" : "text-void-subtle group-hover:text-void-muted"}>
+                  {icon}
+                </span>
+                <span>{label}</span>
+                {needsAttention && (
+                  <span
+                    title="Needs attention"
+                    className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-[10px] font-semibold text-amber-300"
+                  >
+                    !
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -771,10 +747,19 @@ export default function ProfilePage() {
       <div className="flex-1 overflow-y-auto">
         {tab === "profile"   && <ProfileTab />}
         {tab === "searches"  && <SearchesTab />}
-        {tab === "employers" && <EmployersTab />}
         {tab === "resume"    && <ResumeTab />}
         {tab === "billing"   && <BillingTab />}
       </div>
-    </div>
+    </main>
+  );
+}
+
+// `useSearchParams()` must be wrapped in a Suspense boundary so the rest of
+// the page isn't forced into runtime rendering during build.
+export default function ProfilePage() {
+  return (
+    <Suspense>
+      <ProfilePanel />
+    </Suspense>
   );
 }

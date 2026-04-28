@@ -5,7 +5,14 @@ import { useAuth } from "@clerk/nextjs";
 import { getStats, sseUserEventsUrl } from "@/lib/api";
 import type { Stats } from "@/lib/types";
 
-export function useStats(fallbackMs = 60_000) {
+/**
+ * Subscribe to the user's stats. SSE is the source of truth — a `stats_changed`
+ * event triggers a re-fetch. We keep an *optional* visibility-gated fallback
+ * interval (`fallbackMs`) for the rare case where SSE drops silently; pass `0`
+ * to disable it entirely. The interval pauses while the tab is hidden so we
+ * don't burn quota on unfocused tabs.
+ */
+export function useStats(fallbackMs = 0) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { getToken } = useAuth();
@@ -28,7 +35,8 @@ export function useStats(fallbackMs = 60_000) {
     const connect = () => {
       getToken().then((token) => {
         if (!active || !token) return;
-        es = new EventSource(sseUserEventsUrl(token));
+        const url = `${sseUserEventsUrl()}?token=${encodeURIComponent(token)}`;
+        es = new EventSource(url);
 
         es.addEventListener("stats_changed", () => {
           if (active) fetchStats();
@@ -41,19 +49,42 @@ export function useStats(fallbackMs = 60_000) {
           if (active) reconnectTimer = setTimeout(connect, 5_000);
         };
       }).catch(() => {
-        // Token unavailable — SSE skipped, fallback polling still runs
+        // Token unavailable — SSE skipped
       });
     };
     connect();
 
-    // Fallback interval — keeps stats fresh if SSE drops or is slow
-    fallbackId = setInterval(fetchStats, fallbackMs);
+    // Optional fallback — only when fallbackMs > 0, and only while the tab is
+    // visible. Pause/resume with `visibilitychange` so background tabs idle.
+    const startInterval = () => {
+      if (fallbackId != null || fallbackMs <= 0) return;
+      fallbackId = setInterval(fetchStats, fallbackMs);
+    };
+    const stopInterval = () => {
+      if (fallbackId != null) {
+        clearInterval(fallbackId);
+        fallbackId = null;
+      }
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") startInterval();
+      else stopInterval();
+    };
+    if (fallbackMs > 0) {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        startInterval();
+      }
+      document.addEventListener("visibilitychange", onVisibilityChange);
+    }
 
     return () => {
       active = false;
       es?.close();
-      if (fallbackId != null) clearInterval(fallbackId);
+      stopInterval();
       if (reconnectTimer != null) clearTimeout(reconnectTimer);
+      if (fallbackMs > 0) {
+        document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
   }, [getToken, fallbackMs]);
 

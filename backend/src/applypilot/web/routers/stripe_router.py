@@ -13,17 +13,64 @@ frontend can fall back to the dev-only direct upgrade.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import logging
 import os
+import threading
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
 
 from applypilot.web.auth import get_current_user
+from applypilot.web.schemas import (
+    CreateBillingPortalResponse,
+    CreateCheckoutResponse,
+    StripeWebhookResponse,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# ── Stripe client (instance, not module global) ─────────────────────────────
+# BE-009: We previously mutated `stripe.api_key` per request, which races
+# across worker threads. We now hold a single `StripeClient` instance with
+# a bounded HTTP timeout so a slow Stripe doesn't hang request threads
+# indefinitely (TST-017).
+
+_STRIPE_HTTP_TIMEOUT = 10.0  # seconds — per-call cap for any Stripe SDK call
+_stripe_instance = None
+_stripe_instance_lock = threading.Lock()
+_stripe_instance_key: str | None = None
+
+
+def _get_stripe_client():
+    """Return a process-wide ``stripe.StripeClient``, lazily initialized.
+
+    Raises HTTPException(503) when STRIPE_SECRET_KEY is not configured so
+    the frontend can fall back to the dev-only direct upgrade path.
+    """
+    global _stripe_instance, _stripe_instance_key
+
+    key = os.environ.get("STRIPE_SECRET_KEY", "")
+    if not key:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+
+    # Fast-path: already built and the secret hasn't been swapped under us.
+    if _stripe_instance is not None and _stripe_instance_key == key:
+        return _stripe_instance
+
+    with _stripe_instance_lock:
+        if _stripe_instance is not None and _stripe_instance_key == key:
+            return _stripe_instance
+        import stripe as _stripe
+        from stripe._http_client import RequestsClient
+
+        http_client = RequestsClient(timeout=_STRIPE_HTTP_TIMEOUT)
+        _stripe_instance = _stripe.StripeClient(api_key=key, http_client=http_client)
+        _stripe_instance_key = key
+        return _stripe_instance
 
 
 # ── StripeObject helpers ────────────────────────────────────────────────────
@@ -36,6 +83,30 @@ def _get(obj, key, default=None):
         return default if v is None else v
     except (KeyError, AttributeError, TypeError):
         return default
+
+
+def _stripe_call_with_retry(fn, *, op: str):
+    """Run a Stripe SDK call once, retry exactly once after 1s on transient
+    failure, raise HTTPException(503) on persistent failure (TST-017).
+
+    ``fn`` is a zero-arg callable that performs the Stripe call. Per-call
+    timeouts are enforced by the StripeClient's HTTP client (10s).
+    """
+    try:
+        return fn()
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning("Stripe %s failed (attempt 1/2): %s", op, e)
+        time.sleep(1.0)
+        try:
+            return fn()
+        except Exception as e2:
+            log.exception("Stripe %s failed (attempt 2/2): %s", op, e2)
+            raise HTTPException(
+                status_code=503,
+                detail="Billing portal temporarily unavailable",
+            )
 
 
 def _downgrade_user_by_subscription(stripe_subscription_id: str, reason: str) -> None:
@@ -75,19 +146,24 @@ def _claim_event(event_id: str, event_type: str) -> bool:
     return getattr(cur, "rowcount", 1) > 0
 
 
-def _stripe_client():
-    import stripe as _stripe
-    key = os.environ.get("STRIPE_SECRET_KEY", "")
-    if not key:
-        raise HTTPException(status_code=503, detail="Stripe not configured")
-    _stripe.api_key = key
-    return _stripe
+def _event_already_processed(event_id: str) -> bool:
+    """Check (without claiming) whether we've already processed this event.
+    Used to short-circuit replays so we don't re-run handlers."""
+    if not event_id:
+        return False
+    from applypilot.database import get_connection
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT 1 FROM stripe_processed_events WHERE event_id = ?",
+        (event_id,),
+    ).fetchone()
+    return row is not None
 
 
-@router.post("/api/stripe/create-checkout")
-def create_checkout(user: dict = Depends(get_current_user)) -> JSONResponse:
+@router.post("/api/stripe/create-checkout", response_model=CreateCheckoutResponse)
+def create_checkout(user: dict = Depends(get_current_user)) -> CreateCheckoutResponse:
     """Create a Stripe Checkout Session and return the redirect URL."""
-    stripe = _stripe_client()
+    stripe_client = _get_stripe_client()
 
     price_id = os.environ.get("STRIPE_PRICE_ID", "")
     if not price_id:
@@ -102,30 +178,32 @@ def create_checkout(user: dict = Depends(get_current_user)) -> JSONResponse:
         )
 
     try:
-        session = stripe.checkout.Session.create(
-            mode="subscription",
-            line_items=[{"price": price_id, "quantity": 1}],
-            success_url=success_url,
-            cancel_url=cancel_url,
-            client_reference_id=str(user["id"]),
-            customer_email=user.get("email"),
-            metadata={"user_id": str(user["id"])},
+        session = stripe_client.v1.checkout.sessions.create(
+            params={
+                "mode": "subscription",
+                "line_items": [{"price": price_id, "quantity": 1}],
+                "success_url": success_url,
+                "cancel_url": cancel_url,
+                "client_reference_id": str(user["id"]),
+                "customer_email": user.get("email"),
+                "metadata": {"user_id": str(user["id"])},
+            },
         )
-        return JSONResponse({"checkout_url": session.url})
-    except Exception as e:
-        log.error("Stripe checkout creation failed: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        return CreateCheckoutResponse(checkout_url=session.url)
+    except Exception:
+        log.exception("Stripe checkout creation failed")
+        raise HTTPException(status_code=500, detail="Stripe error — please try again")
 
 
-@router.post("/api/stripe/billing-portal")
-def create_billing_portal(user: dict = Depends(get_current_user)) -> JSONResponse:
+@router.post("/api/stripe/billing-portal", response_model=CreateBillingPortalResponse)
+def create_billing_portal(user: dict = Depends(get_current_user)) -> CreateBillingPortalResponse:
     """Create a Stripe Billing Portal session so the user can self-serve cancel,
     update their card, view invoices, etc. Stripe hosts the entire UI.
 
     Requires the user to have a stripe_customer_id (set when they first checked out).
     Cancellations made in the portal flow back through the webhook.
     """
-    stripe = _stripe_client()
+    stripe_client = _get_stripe_client()
 
     from applypilot.database import get_connection
     conn = get_connection()
@@ -137,12 +215,23 @@ def create_billing_portal(user: dict = Depends(get_current_user)) -> JSONRespons
     # Backfill: users upgraded before stripe_customer_id was being persisted
     # (or via fallback paths) won't have a customer ID. Look them up in Stripe
     # by email and store the result so future calls are fast.
+    #
+    # TST-017: every Stripe call here is wrapped in a 10s-timeout client and
+    # a single retry-with-backoff so a Stripe outage can't pin a request
+    # thread. On second failure we surface 503.
     if not customer_id and user.get("email"):
         try:
-            customers = stripe.Customer.list(email=user["email"], limit=1)
+            customers = _stripe_call_with_retry(
+                lambda: stripe_client.v1.customers.list(
+                    params={"email": user["email"], "limit": 1},
+                ),
+                op="customers.list",
+            )
             data = _get(customers, "data", []) or []
             if data:
                 customer_id = _get(data[0], "id")
+        except HTTPException:
+            raise
         except Exception as e:
             log.warning("Stripe customer lookup by email failed: %s", e)
 
@@ -150,10 +239,17 @@ def create_billing_portal(user: dict = Depends(get_current_user)) -> JSONRespons
         subscription_id = None
         if customer_id:
             try:
-                subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)
+                subs = _stripe_call_with_retry(
+                    lambda: stripe_client.v1.subscriptions.list(
+                        params={"customer": customer_id, "status": "all", "limit": 1},
+                    ),
+                    op="subscriptions.list",
+                )
                 sdata = _get(subs, "data", []) or []
                 if sdata:
                     subscription_id = _get(sdata[0], "id")
+            except HTTPException:
+                raise
             except Exception as e:
                 log.warning("Stripe subscription lookup failed: %s", e)
 
@@ -182,14 +278,13 @@ def create_billing_portal(user: dict = Depends(get_current_user)) -> JSONRespons
         return_url = return_url.rstrip("/") + "/profile?tab=billing"
 
     try:
-        session = stripe.billing_portal.Session.create(
-            customer=customer_id,
-            return_url=return_url,
+        session = stripe_client.v1.billing_portal.sessions.create(
+            params={"customer": customer_id, "return_url": return_url},
         )
-        return JSONResponse({"portal_url": session.url})
+        return CreateBillingPortalResponse(portal_url=session.url)
     except Exception as e:
         msg = str(e)
-        log.error("Stripe billing portal creation failed: %s", msg)
+        log.exception("Stripe billing portal creation failed")
         # Most common cause: portal not yet activated in Stripe Dashboard
         if "configuration" in msg.lower() or "no configuration" in msg.lower():
             raise HTTPException(
@@ -197,17 +292,21 @@ def create_billing_portal(user: dict = Depends(get_current_user)) -> JSONRespons
                 detail=("Stripe billing portal is not yet configured. "
                         "Activate it in Stripe Dashboard → Settings → Billing → Customer portal."),
             )
-        raise HTTPException(status_code=500, detail=msg)
+        raise HTTPException(status_code=500, detail="Stripe error — please try again")
 
 
-@router.post("/api/stripe/webhook")
-async def stripe_webhook(request: Request) -> JSONResponse:
+@router.post("/api/stripe/webhook", response_model=StripeWebhookResponse)
+async def stripe_webhook(request: Request) -> StripeWebhookResponse:
     """Handle Stripe webhook events.
 
     Verifies the Stripe-Signature header and upgrades the user on
     checkout.session.completed.
     """
-    stripe = _stripe_client()
+    # Touch the client so misconfiguration (no STRIPE_SECRET_KEY) returns 503
+    # consistently with the rest of the router. ``stripe.Webhook.construct_event``
+    # is itself a static method that doesn't need the client.
+    _get_stripe_client()
+    import stripe as _stripe
 
     webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
     if not webhook_secret:
@@ -217,7 +316,7 @@ async def stripe_webhook(request: Request) -> JSONResponse:
     sig_header = request.headers.get("stripe-signature", "")
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+        event = _stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
     except Exception as e:
         detail = "Invalid signature" if "SignatureVerification" in type(e).__name__ else str(e)
         raise HTTPException(status_code=400, detail=detail)
@@ -225,27 +324,59 @@ async def stripe_webhook(request: Request) -> JSONResponse:
     event_type = event["type"]
     event_id = _get(event, "id", "")
 
-    # Idempotency: Stripe retries on non-2xx, and even 2xx responses can be
-    # delivered more than once. Skip if we've already processed this event.
-    if event_id and not _claim_event(event_id, event_type):
+    # Idempotency short-circuit: if we've already successfully processed this
+    # event, return 200 without re-running the handler. We check here (without
+    # claiming) so that a handler failure on a previous delivery does NOT block
+    # Stripe's retry — we'll reach the handler below and try again.
+    if await asyncio.to_thread(_event_already_processed, event_id):
         log.info("Stripe webhook duplicate event ignored: %s (%s)", event_id, event_type)
-        return JSONResponse({"received": True, "duplicate": True})
+        return StripeWebhookResponse(received=True, duplicate=True)
 
+    # Run the handler FIRST. Our handlers are idempotent (UPDATEs keyed on
+    # subscription_id/customer_id/user_id), so the rare race where Stripe
+    # redelivers before we claim the event is safe — the second pass will
+    # produce the same DB state and then `_claim_event` will return False.
     try:
         if event_type == "checkout.session.completed":
-            _handle_checkout_completed(event["data"]["object"])
+            await asyncio.to_thread(_handle_checkout_completed, event["data"]["object"])
         elif event_type == "customer.subscription.deleted":
-            _handle_subscription_deleted(event["data"]["object"])
+            await asyncio.to_thread(_handle_subscription_deleted, event["data"]["object"])
         elif event_type == "customer.subscription.updated":
-            _handle_subscription_updated(event["data"]["object"])
+            await asyncio.to_thread(_handle_subscription_updated, event["data"]["object"])
         elif event_type == "invoice.payment_failed":
-            _handle_invoice_payment_failed(event["data"]["object"])
-    except Exception as e:
-        # Never raise — Stripe will retry indefinitely on 5xx and we've already
-        # claimed the event. Log loudly instead.
-        log.exception("Stripe webhook handler failed for %s: %s", event_type, e)
+            await asyncio.to_thread(_handle_invoice_payment_failed, event["data"]["object"])
+    except Exception:
+        # Do NOT claim the event. Returning 5xx tells Stripe to retry with
+        # exponential backoff so the user's tier eventually flips even if we
+        # had a transient DB hiccup. Log with full context for monitoring.
+        log.exception(
+            "Stripe webhook handler failed for event_type=%s event_id=%s",
+            event_type, event_id,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Webhook handler failed — please retry",
+        )
 
-    return JSONResponse({"received": True})
+    # Handler succeeded — now claim the event so future redeliveries are
+    # short-circuited above. If the claim itself fails (network/DB), we still
+    # return 200: the handler already mutated state, and a redelivery would
+    # just be a no-op against our idempotent UPDATEs.
+    if event_id:
+        try:
+            claimed = await asyncio.to_thread(_claim_event, event_id, event_type)
+            if not claimed:
+                log.info(
+                    "Stripe webhook event %s (%s) was already claimed during "
+                    "concurrent processing", event_id, event_type,
+                )
+        except Exception:
+            log.exception(
+                "Failed to record processed Stripe event %s (%s); handler already ran",
+                event_id, event_type,
+            )
+
+    return StripeWebhookResponse(received=True)
 
 
 # ── Event handlers ──────────────────────────────────────────────────────────

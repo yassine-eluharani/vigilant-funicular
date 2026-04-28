@@ -13,9 +13,11 @@ If neither is configured, send_email() is a no-op (logs a warning).
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -71,9 +73,13 @@ def _send_smtp(host: str, to: str, subject: str, html: str, text: str | None) ->
             msg.attach(MIMEText(text, "plain"))
         msg.attach(MIMEText(html, "html"))
 
+        context = ssl.create_default_context()
         with smtplib.SMTP(host, port) as server:
             server.ehlo()
-            server.starttls()
+            if not server.has_extn("STARTTLS"):
+                raise RuntimeError("SMTP server does not support STARTTLS")
+            server.starttls(context=context)
+            server.ehlo()
             if user and password:
                 server.login(user, password)
             server.sendmail(from_addr, [to], msg.as_string())
@@ -129,16 +135,16 @@ def notify_new_high_score_jobs(user_id: int, new_job_urls: list[str]) -> bool:
     subject = f"{count} new high-match job{'s' if count > 1 else ''} on ApplyPilot"
 
     rows_html = "".join(
-        f"<tr><td style='padding:8px 12px'>{j['title'] or '—'}</td>"
-        f"<td style='padding:8px 12px'>{j['company'] or '—'}</td>"
-        f"<td style='padding:8px 12px'>{j['location'] or '—'}</td>"
-        f"<td style='padding:8px 12px;text-align:center'><strong>{j['fit_score']}/10</strong></td></tr>"
+        f"<tr><td style='padding:8px 12px'>{html.escape(j['title'] or '—')}</td>"
+        f"<td style='padding:8px 12px'>{html.escape(j['company'] or '—')}</td>"
+        f"<td style='padding:8px 12px'>{html.escape(j['location'] or '—')}</td>"
+        f"<td style='padding:8px 12px;text-align:center'><strong>{html.escape(str(j['fit_score']))}/10</strong></td></tr>"
         for j in jobs
     )
-    html = f"""
+    html_body = f"""
 <html><body style="font-family:sans-serif;color:#1a1a1a;max-width:600px;margin:0 auto">
   <h2 style="margin-bottom:4px">New high-match jobs</h2>
-  <p style="color:#666;margin-top:0">ApplyPilot found {count} new job{'s' if count > 1 else ''} that match your profile.</p>
+  <p style="color:#666;margin-top:0">ApplyPilot found {html.escape(str(count))} new job{'s' if count > 1 else ''} that match your profile.</p>
   <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden">
     <thead style="background:#f9fafb">
       <tr>
@@ -165,4 +171,4 @@ def notify_new_high_score_jobs(user_id: int, new_job_urls: list[str]) -> bool:
         f"- {j['title']} at {j['company']} ({j['fit_score']}/10)" for j in jobs
     )
 
-    return send_email(email, subject, html, text)
+    return send_email(email, subject, html_body, text)

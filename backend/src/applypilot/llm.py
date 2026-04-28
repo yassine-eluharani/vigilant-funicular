@@ -11,6 +11,7 @@ LLM_MODEL env var overrides the model name for any provider.
 
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -60,6 +61,121 @@ def _detect_provider() -> tuple[str, str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Concurrency cap
+# ---------------------------------------------------------------------------
+#
+# Cap concurrent in-flight LLM HTTP calls process-wide. Without this, a burst
+# of requests can saturate the FastAPI threadpool — every thread blocks on a
+# slow LLM call (especially during 429/503 retries with sleep backoff), and
+# the API stops accepting new connections.
+#
+# Configurable via LLM_MAX_CONCURRENT env var (default: 8).
+
+def _llm_semaphore_size() -> int:
+    raw = os.environ.get("LLM_MAX_CONCURRENT", "")
+    if raw:
+        try:
+            n = int(raw)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    return 8
+
+
+_LLM_SEMAPHORE = threading.Semaphore(_llm_semaphore_size())
+
+
+# ---------------------------------------------------------------------------
+# Circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class LLMUnavailable(RuntimeError):
+    """Raised when the circuit breaker is open — fail fast, don't hit the network."""
+
+
+class CircuitBreaker:
+    """A minimal three-state circuit breaker.
+
+    States:
+      - closed:    requests pass through; consecutive failures are counted.
+      - open:      requests are rejected immediately for `recovery_timeout` s.
+      - half-open: one trial request is allowed; success → closed, failure → open.
+
+    The breaker is global per process (not per provider) — simpler, and
+    sufficient because ApplyPilot uses one provider per process.
+    """
+
+    STATE_CLOSED = "closed"
+    STATE_OPEN = "open"
+    STATE_HALF_OPEN = "half_open"
+
+    def __init__(self, failure_threshold: int = 5, recovery_timeout: float = 30.0) -> None:
+        self.failure_threshold = failure_threshold
+        self.recovery_timeout = recovery_timeout
+        self._state = self.STATE_CLOSED
+        self._consecutive_failures = 0
+        self._opened_at: float = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def state(self) -> str:
+        # Recompute lazily — if recovery_timeout has elapsed since opening,
+        # transition to half-open so a trial request can flow.
+        with self._lock:
+            if self._state == self.STATE_OPEN:
+                if time.monotonic() - self._opened_at >= self.recovery_timeout:
+                    self._state = self.STATE_HALF_OPEN
+            return self._state
+
+    def before_call(self) -> None:
+        """Raise LLMUnavailable if the breaker is currently open."""
+        if self.state == self.STATE_OPEN:
+            raise LLMUnavailable(
+                f"LLM circuit breaker is open (after {self._consecutive_failures} "
+                f"consecutive failures). Will retry in "
+                f"{max(0.0, self.recovery_timeout - (time.monotonic() - self._opened_at)):.0f}s."
+            )
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive_failures = 0
+            if self._state != self.STATE_CLOSED:
+                log.info("LLM circuit breaker closed (recovered).")
+            self._state = self.STATE_CLOSED
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._consecutive_failures += 1
+            if self._state == self.STATE_HALF_OPEN:
+                # Half-open trial failed — re-open immediately.
+                self._state = self.STATE_OPEN
+                self._opened_at = time.monotonic()
+                log.warning("LLM circuit breaker re-opened after half-open trial failed.")
+                return
+            if self._consecutive_failures >= self.failure_threshold:
+                if self._state != self.STATE_OPEN:
+                    log.warning(
+                        "LLM circuit breaker opened after %d consecutive failures. "
+                        "Failing fast for %.0fs.",
+                        self._consecutive_failures, self.recovery_timeout,
+                    )
+                self._state = self.STATE_OPEN
+                self._opened_at = time.monotonic()
+
+    def reset(self) -> None:
+        """Force-reset the breaker (mainly for tests)."""
+        with self._lock:
+            self._state = self.STATE_CLOSED
+            self._consecutive_failures = 0
+            self._opened_at = 0.0
+
+
+_BREAKER = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
+
+
+# ---------------------------------------------------------------------------
 # Client
 # ---------------------------------------------------------------------------
 
@@ -89,8 +205,10 @@ class LLMClient:
         self.model = model
         self.api_key = api_key
         self._client = httpx.Client(timeout=_TIMEOUT)
-        # True once we've confirmed the native Gemini API works for this model
+        # True once we've confirmed the native Gemini API works for this model.
+        # Mutated under _native_lock — multiple threads can race the first 403.
         self._use_native_gemini: bool = False
+        self._native_lock = threading.Lock()
         self._is_gemini: bool = base_url.startswith(_GEMINI_COMPAT_BASE)
 
     # -- Native Gemini API --------------------------------------------------
@@ -139,12 +257,13 @@ class LLMClient:
             payload["systemInstruction"] = {"parts": system_parts}
 
         url = f"{_GEMINI_NATIVE_BASE}/models/{self.model}:generateContent"
-        resp = self._client.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            params={"key": self.api_key},
-        )
+        with _LLM_SEMAPHORE:
+            resp = self._client.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                params={"key": self.api_key},
+            )
         resp.raise_for_status()
         data = resp.json()
         parts = data["candidates"][0]["content"]["parts"]
@@ -180,11 +299,12 @@ class LLMClient:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        resp = self._client.post(
-            f"{self.base_url}/chat/completions",
-            json=payload,
-            headers=headers,
-        )
+        with _LLM_SEMAPHORE:
+            resp = self._client.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+            )
 
         # 403/404 on Gemini compat = model not available on compat layer
         # or compat endpoint mismatch for the selected model/account.
@@ -217,13 +337,20 @@ class LLMClient:
             if first.get("role") == "user" and not first["content"].startswith("/no_think"):
                 messages = [{"role": first["role"], "content": f"/no_think\n{first['content']}"}] + messages[1:]
 
+        # Fail fast if the breaker is open — don't enter the retry loop.
+        _BREAKER.before_call()
+
         for attempt in range(_MAX_RETRIES):
             try:
-                # Route to native Gemini if we've already confirmed it's needed
-                if self._use_native_gemini:
-                    return self._chat_native_gemini(messages, temperature, max_tokens, json_mode=json_mode)
-
-                return self._chat_compat(messages, temperature, max_tokens, json_mode=json_mode)
+                # Snapshot the flag under the lock so we route consistently.
+                with self._native_lock:
+                    use_native = self._use_native_gemini
+                if use_native:
+                    result = self._chat_native_gemini(messages, temperature, max_tokens, json_mode=json_mode)
+                else:
+                    result = self._chat_compat(messages, temperature, max_tokens, json_mode=json_mode)
+                _BREAKER.record_success()
+                return result
 
             except _GeminiCompatUnavailable as exc:
                 # Model/endpoint not available on OpenAI-compat layer — switch to native.
@@ -234,11 +361,15 @@ class LLMClient:
                     exc.response.status_code,
                     self.model,
                 )
-                self._use_native_gemini = True
+                with self._native_lock:
+                    self._use_native_gemini = True
                 # Retry immediately with native — don't count as a rate-limit wait
                 try:
-                    return self._chat_native_gemini(messages, temperature, max_tokens, json_mode=json_mode)
+                    result = self._chat_native_gemini(messages, temperature, max_tokens, json_mode=json_mode)
+                    _BREAKER.record_success()
+                    return result
                 except httpx.HTTPStatusError as native_exc:
+                    _BREAKER.record_failure()
                     raise RuntimeError(
                         f"Both Gemini endpoints failed. Compat: {exc.response.status_code}. "
                         f"Native: {native_exc.response.status_code} — "
@@ -248,6 +379,7 @@ class LLMClient:
             except httpx.HTTPStatusError as exc:
                 resp = exc.response
                 if resp.status_code in (429, 503) and attempt < _MAX_RETRIES - 1:
+                    _BREAKER.record_failure()
                     # Respect Retry-After header if provided (Gemini sends this).
                     retry_after = (
                         resp.headers.get("Retry-After")
@@ -267,21 +399,33 @@ class LLMClient:
                         "or switching to a local model.",
                         resp.status_code, wait, attempt + 1, _MAX_RETRIES,
                     )
+                    # If recording the failure tripped the breaker, abort early —
+                    # don't sleep for nothing.
+                    if _BREAKER.state == CircuitBreaker.STATE_OPEN:
+                        raise LLMUnavailable(
+                            f"LLM circuit breaker opened mid-retry after HTTP {resp.status_code}."
+                        ) from exc
                     time.sleep(wait)
                     continue
+                _BREAKER.record_failure()
                 raise
 
             except httpx.TimeoutException:
                 if attempt < _MAX_RETRIES - 1:
+                    _BREAKER.record_failure()
                     wait = min(_RATE_LIMIT_BASE_WAIT * (2 ** attempt), 60)
                     log.warning(
                         "LLM request timed out, retrying in %ds (attempt %d/%d)",
                         wait, attempt + 1, _MAX_RETRIES,
                     )
+                    if _BREAKER.state == CircuitBreaker.STATE_OPEN:
+                        raise LLMUnavailable("LLM circuit breaker opened mid-retry after timeout.")
                     time.sleep(wait)
                     continue
+                _BREAKER.record_failure()
                 raise
 
+        _BREAKER.record_failure()
         raise RuntimeError("LLM request failed after all retries")
 
     def ask(self, prompt: str, **kwargs) -> str:
@@ -304,13 +448,16 @@ class _GeminiCompatUnavailable(Exception):
 # ---------------------------------------------------------------------------
 
 _instance: LLMClient | None = None
+_instance_lock = threading.Lock()
 
 
 def get_client() -> LLMClient:
     """Return (or create) the module-level LLMClient singleton."""
     global _instance
     if _instance is None:
-        base_url, model, api_key = _detect_provider()
-        log.info("LLM provider: %s  model: %s", base_url, model)
-        _instance = LLMClient(base_url, model, api_key)
+        with _instance_lock:
+            if _instance is None:
+                base_url, model, api_key = _detect_provider()
+                log.info("LLM provider: %s  model: %s", base_url, model)
+                _instance = LLMClient(base_url, model, api_key)
     return _instance

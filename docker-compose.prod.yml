@@ -1,5 +1,11 @@
 name: applypilot
 
+# Network segmentation (INF-021):
+# - frontend-net: nginx ↔ frontend (public-facing edge)
+# - backend-net:  frontend ↔ backend (internal app traffic)
+# Backend is intentionally NOT on frontend-net so nginx cannot reach it
+# directly — all traffic must go through the Next.js process, which lets
+# us enforce auth/rate-limit logic in one place.
 services:
   backend:
     build:
@@ -8,13 +14,26 @@ services:
       target: production
       args:
         - INSTALL_PLAYWRIGHT=true
-    command: uvicorn applypilot.web.server:app --host 0.0.0.0 --port 8000 --workers 2
+    env_file:
+      - .env
+    # Single worker only: in-memory state in web/core.py (rate limiter, task registry, SSE)
+    # is not shared across workers. Scaling beyond 1 requires Redis-backed state.
+    command: uvicorn applypilot.web.server:app --host 0.0.0.0 --port 8000 --workers 1
     environment:
       - APPLYPILOT_DIR=/data
       - PYTHONUNBUFFERED=1
       - CORS_ORIGINS=${FRONTEND_ORIGIN:-http://localhost}
     expose:
       - "8000"
+    networks:
+      - backend-net
+    mem_limit: 2g
+    cpus: 1.5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2g
     restart: unless-stopped
 
   frontend:
@@ -24,14 +43,27 @@ services:
       target: production
       args:
         - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+    env_file:
+      - .env
     environment:
       - NODE_ENV=production
       - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
     expose:
       - "3000"
+    networks:
+      - frontend-net
+      - backend-net
+    mem_limit: 2g
+    cpus: 1.5
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 2g
     restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   nginx:
     build:
@@ -40,20 +72,38 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    # SSL cert volumes (INF-016): project-local paths under ./certbot/. The
+    # `setup-ssl.sh` script creates these on demand; on a fresh server
+    # nothing needs to pre-exist. Using bind-mounts (rather than named
+    # volumes) keeps certs visible on the host for inspection / backup.
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - /var/www/certbot:/var/www/certbot:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
     environment:
       - DOMAIN=${DOMAIN:-localhost}
+    networks:
+      - frontend-net
     depends_on:
-      - backend
-      - frontend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
     restart: unless-stopped
 
   certbot:
     image: certbot/certbot:latest
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt
-      - /var/www/certbot:/var/www/certbot
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
     profiles:
       - ssl  # only runs when: docker compose --profile ssl run certbot ...
+
+networks:
+  # Edge network: nginx terminates TLS here and forwards to the Next.js
+  # frontend. Backend never joins this network.
+  frontend-net:
+    driver: bridge
+  # Internal app network: frontend's server-side fetch (api.ts BASE) talks
+  # to backend over this network using the service name `backend`.
+  backend-net:
+    driver: bridge

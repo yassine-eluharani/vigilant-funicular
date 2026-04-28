@@ -263,12 +263,18 @@ def run_scoring(user_id: int | None = None, limit: int = 0, rescore: bool = Fals
                     user_id, job["url"][:80], e, exc_info=True,
                 )
         else:
-            conn.execute(
-                "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
-                (result["score"], reasoning_text, now, job["url"]),
-            )
-            conn.commit()
-            scored_count += 1
+            try:
+                conn.execute(
+                    "UPDATE jobs SET fit_score = ?, score_reasoning = ?, scored_at = ? WHERE url = ?",
+                    (result["score"], reasoning_text, now, job["url"]),
+                )
+                conn.commit()
+                scored_count += 1
+            except Exception as e:
+                log.error(
+                    "Failed to persist score for url=%s: %s",
+                    job["url"][:80], e, exc_info=True,
+                )
 
         log.info(
             "[%d/%d] score=%d  %s",

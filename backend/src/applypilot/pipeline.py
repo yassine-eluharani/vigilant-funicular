@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable
 
 from applypilot.config import load_env, ensure_dirs
-from applypilot.database import init_db, get_connection
+from applypilot.database import init_db
+from applypilot.scoring.filter_and_score import run_two_phase_scoring
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +37,6 @@ def _run_score(user_id: int | None = None) -> dict:
     if user_id is None:
         return {"status": "error: user_id required for two-phase scoring"}
     try:
-        from applypilot.scoring.filter_and_score import run_two_phase_scoring
         result = run_two_phase_scoring(user_id=user_id)
         return {"status": "ok", **result}
     except Exception as e:
@@ -43,7 +44,10 @@ def _run_score(user_id: int | None = None) -> dict:
         return {"status": f"error: {e}"}
 
 
-_STAGE_RUNNERS: dict[str, callable] = {
+# BE-025: was `dict[str, callable]` — `callable` is the builtin function, not a
+# type annotation. `Callable[..., dict]` correctly types each stage runner as
+# a function returning a dict (matching `_run_score` above).
+_STAGE_RUNNERS: dict[str, Callable[..., dict]] = {
     "score": _run_score,
 }
 

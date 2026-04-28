@@ -8,6 +8,8 @@ without migration ordering issues.
 import logging
 import sqlite3
 import threading
+import time as _time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,11 @@ _local = threading.local()
 # Once-per-process init guard — prevents re-running schema checks on every request
 _db_initialized = False
 _db_init_lock = threading.Lock()
+
+# BE-022: only re-validate a cached SQLite connection if it has been idle for
+# more than this many seconds. Connections in active use don't need a SELECT 1
+# on every checkout — sqlite3 surfaces ProgrammingError at usage time anyway.
+_CONN_REVALIDATE_AFTER = 60.0
 
 
 def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
@@ -47,11 +54,23 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
 
     if not hasattr(_local, 'connections'):
         _local.connections = {}
+    if not hasattr(_local, 'last_used'):
+        _local.last_used = {}
 
+    now = _time.monotonic()
     conn = _local.connections.get(path)
     if conn is not None:
+        # BE-022: Skip the SELECT 1 health check on every call — it added a
+        # round trip per request for no benefit on connections we just used.
+        # Only revalidate if the connection has been idle past the threshold;
+        # otherwise rely on sqlite3.ProgrammingError surfacing at usage time.
+        last = _local.last_used.get(path, now)
+        if now - last < _CONN_REVALIDATE_AFTER:
+            _local.last_used[path] = now
+            return conn
         try:
             conn.execute("SELECT 1")
+            _local.last_used[path] = now
             return conn
         except sqlite3.ProgrammingError:
             pass
@@ -61,6 +80,7 @@ def get_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     _local.connections[path] = conn
+    _local.last_used[path] = now
     return conn
 
 
@@ -107,6 +127,32 @@ class _TursoRow(dict):
         return super().keys()
 
 
+def _to_arg(p) -> dict:
+    """BE-018: single source of truth for libsql HTTP arg encoding.
+
+    Maps a Python value to the {type, value} dict expected by Turso's
+    /v2/pipeline endpoint. Bool is handled explicitly even though it's a
+    behavioral no-op (bool is a subclass of int in Python) — keeping the
+    branch explicit so future readers don't second-guess the order.
+
+    Bytes are not supported by this encoder; raise loudly rather than
+    silently stringifying them.
+    """
+    if p is None:
+        return {"type": "null", "value": None}
+    if isinstance(p, bool):
+        # Explicit branch (BE-018). bool is int in Python, so the int encoding
+        # below would also work — but spelling it out documents intent.
+        return {"type": "integer", "value": str(int(p))}
+    if isinstance(p, int):
+        return {"type": "integer", "value": str(p)}
+    if isinstance(p, float):
+        return {"type": "float", "value": str(p)}
+    if isinstance(p, (bytes, bytearray, memoryview)):
+        raise TypeError("bytes parameters are not supported by the Turso encoder")
+    return {"type": "text", "value": str(p)}
+
+
 class _TursoConnection:
     """sqlite3.Connection-compatible wrapper that talks to Turso over HTTPS."""
 
@@ -122,11 +168,7 @@ class _TursoConnection:
         self.row_factory = None  # accepted but unused — rows always behave like sqlite3.Row
 
     def _execute_remote(self, sql: str, parameters: tuple = ()) -> _TursoCursor:
-        args = [{"type": "integer" if isinstance(p, int) else
-                          "float"   if isinstance(p, float) else
-                          "null"    if p is None else "text",
-                 "value": str(p) if p is not None else None}
-                for p in parameters]
+        args = [_to_arg(p) for p in parameters]
 
         payload = {
             "requests": [
@@ -190,17 +232,7 @@ class _TursoConnection:
             chunk = statements[i : i + chunk_size]
             requests = []
             for sql, params in chunk:
-                args = [
-                    {
-                        "type": (
-                            "integer" if isinstance(p, int) else
-                            "float"   if isinstance(p, float) else
-                            "null"    if p is None else "text"
-                        ),
-                        "value": str(p) if p is not None else None,
-                    }
-                    for p in params
-                ]
+                args = [_to_arg(p) for p in params]
                 requests.append({"type": "execute", "stmt": {"sql": sql, "args": args}})
             requests.append({"type": "close"})
             resp = self._client.post(self._http_url, json={"requests": requests}, headers=self._headers)
@@ -220,17 +252,7 @@ class _TursoConnection:
             return []
         requests = []
         for sql, params in statements:
-            args = [
-                {
-                    "type": (
-                        "integer" if isinstance(p, int) else
-                        "float"   if isinstance(p, float) else
-                        "null"    if p is None else "text"
-                    ),
-                    "value": str(p) if p is not None else None,
-                }
-                for p in params
-            ]
+            args = [_to_arg(p) for p in params]
             requests.append({"type": "execute", "stmt": {"sql": sql, "args": args}})
         requests.append({"type": "close"})
         resp = self._client.post(self._http_url, json={"requests": requests}, headers=self._headers)
@@ -278,6 +300,83 @@ class _TursoConnection:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         return False  # never suppress exceptions
+
+    @contextmanager
+    def transaction(self):
+        """BE-010: batch multi-statement work into a single libsql HTTP roundtrip.
+
+        Turso's HTTP/v2 pipeline endpoint executes each `execute` request in
+        order, but ApplyPilot's normal `conn.execute(...)` path issues one HTTP
+        round trip per statement — there is no real cross-statement transaction
+        boundary, only per-statement atomicity. That's a known limitation: a
+        sequence of UPDATEs followed by an INSERT is NOT atomic over the HTTP
+        wrapper. If you need atomicity, buffer the statements and submit them
+        as one pipeline via `execute_pipeline` / `execute_batch`.
+
+        This context manager provides exactly that helper: callers append
+        `(sql, params)` tuples to the yielded list, and on clean exit they're
+        flushed together via `execute_pipeline`. On exception nothing is sent
+        — the buffered statements are dropped (closest we can get to ROLLBACK
+        without an explicit BEGIN/COMMIT, which libsql HTTP does not expose).
+
+        Usage:
+            with conn.transaction() as tx:
+                tx.append(("UPDATE users SET tier = ? WHERE id = ?", ("pro", uid)))
+                tx.append(("INSERT INTO audit (...) VALUES (?)", (uid,)))
+
+        Existing helpers `execute_pipeline` and `batch_query` already exist for
+        the read-batching case; this is the write-side counterpart. Most call
+        sites have NOT been migrated — see individual call sites for whether
+        they actually need atomicity. Migration is left for future work.
+        """
+        buf: list[tuple[str, tuple]] = []
+        yield buf
+        if buf:
+            self.execute_pipeline(buf)
+
+
+@contextmanager
+def transaction(conn: sqlite3.Connection):
+    """Multi-statement transaction helper that works on either backend.
+
+    Local SQLite: wraps the block in BEGIN/COMMIT (rolls back on exception).
+    Turso: buffers the statements and submits them as a single libsql HTTP
+    pipeline roundtrip on success — see `_TursoConnection.transaction` for
+    the limitations.
+
+    Important: caller-supplied SQL must use `?` placeholders. The buffered
+    Turso path executes statements via `execute_pipeline`; the sqlite path
+    executes them directly on `conn`.
+
+    Usage:
+        with transaction(conn) as tx:
+            tx.append(("UPDATE ...", (...,)))
+            tx.append(("INSERT ...", (...,)))
+    """
+    if isinstance(conn, _TursoConnection):
+        with conn.transaction() as buf:
+            yield buf
+        return
+    buf: list[tuple[str, tuple]] = []
+    try:
+        yield buf
+    except Exception:
+        # Drop the buffered statements — caller's exception propagates.
+        raise
+    else:
+        if not buf:
+            return
+        try:
+            conn.execute("BEGIN")
+            for sql, params in buf:
+                conn.execute(sql, params)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
 
 
 def close_connection(db_path: Path | str | None = None) -> None:
