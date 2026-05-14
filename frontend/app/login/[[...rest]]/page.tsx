@@ -74,7 +74,7 @@ function LoginPanel() {
                 colorInputText: "#E2E8F0",
                 colorNeutral: "#1E1E2A",
                 borderRadius: "0.5rem",
-                fontFamily: "var(--font-inter), sans-serif",
+                fontFamily: "var(--font-sans), sans-serif",
               },
               elements: {
                 card: "shadow-none border border-white/[0.06] bg-[#0A0A0F]",

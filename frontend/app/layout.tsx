@@ -1,25 +1,32 @@
 import type { Metadata } from "next";
-import { Geist, Instrument_Serif, JetBrains_Mono } from "next/font/google";
+import { Inter, Fraunces, JetBrains_Mono } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 import { ToastProvider } from "@/components/ui/Toast";
 import { AuthProvider } from "@/contexts/AuthContext";
 
-const geist = Geist({
-  variable: "--font-geist-sans",
+// Body sans: Inter — high x-height, hinted for screens, the workhorse for
+// dense UI text. Use the variable cut so weight can swing without loading
+// extra files.
+const inter = Inter({
+  variable: "--font-sans-base",
   subsets: ["latin"],
   display: "swap",
+  axes: ["opsz"],
 });
 
-const instrumentSerif = Instrument_Serif({
-  variable: "--font-instrument-serif",
+// Display serif: Fraunces — variable axes (weight + opsz + SOFT) give it
+// real character at headline sizes without going anaemic on dark
+// backgrounds the way the previous Instrument Serif did at weight 400.
+const fraunces = Fraunces({
+  variable: "--font-display-base",
   subsets: ["latin"],
-  weight: "400",
   display: "swap",
+  axes: ["opsz", "SOFT"],
 });
 
 const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-jetbrains-mono",
+  variable: "--font-mono-base",
   subsets: ["latin"],
   display: "swap",
 });
@@ -50,7 +57,7 @@ export default function RootLayout({
     >
       <html
         lang="en"
-        className={`${geist.variable} ${instrumentSerif.variable} ${jetbrainsMono.variable} h-full`}
+        className={`${inter.variable} ${fraunces.variable} ${jetbrainsMono.variable} h-full`}
       >
         <body className="h-full bg-void-bg text-void-text antialiased font-sans">
           <AuthProvider>

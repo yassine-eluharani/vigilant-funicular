@@ -38,9 +38,9 @@
   --color-score-9:    #D8A24A; /* score 9-10: distinctive gold (matches --void-gold) */
 
   /* Fonts */
-  --font-sans:    var(--font-geist-sans), system-ui, sans-serif;
-  --font-display: var(--font-instrument-serif), Georgia, serif;
-  --font-mono:    var(--font-jetbrains-mono), "Fira Code", "Cascadia Code", monospace;
+  --font-sans:    var(--font-sans-base), -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-display: var(--font-display-base), "Iowan Old Style", "Apple Garamond", Georgia, serif;
+  --font-mono:    var(--font-mono-base), "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Menlo, monospace;
 }
 
 /* ── Plain CSS variables (for arbitrary values, gradients, glows) ────────── */
@@ -70,13 +70,23 @@ body {
   background-color: var(--color-void-bg);
   color: var(--color-void-text);
   font-family: var(--font-sans);
+  /* Inter renders crisper with these explicitly enabled. cv11 = single-storey
+     'a' (cleaner at small sizes); ss01 = open digits; ss03 = curved 'l'. */
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-/* ── Editorial display type (opt-in via class) ───────────────────────────── */
+/* ── Display type (opt-in via class) ─────────────────────────────────────── */
 
 .font-display {
   font-family: var(--font-display);
-  letter-spacing: -0.02em;
+  /* Fraunces variable axes — soft optical correction for headline sizes,
+     mid-weight so it has presence on dark without going inky. */
+  font-variation-settings: "opsz" 144, "SOFT" 50;
+  font-weight: 500;
+  letter-spacing: -0.015em;
 }
 
 /* ── Per-page accent bands (DES-024) ─────────────────────────────────────── */

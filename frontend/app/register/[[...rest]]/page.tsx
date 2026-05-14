@@ -66,7 +66,7 @@ export default function RegisterPage() {
                 colorInputText: "#e2e8f0",
                 colorNeutral: "#1e1e30",
                 borderRadius: "0.5rem",
-                fontFamily: "var(--font-inter), sans-serif",
+                fontFamily: "var(--font-sans), sans-serif",
               },
               elements: {
                 card: "shadow-none border border-white/[0.06] bg-[#0d0d1a]",
