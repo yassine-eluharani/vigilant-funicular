@@ -198,22 +198,13 @@ def client(tmp_db, mock_jwks, monkeypatch):
 
 @pytest.fixture
 def make_user(tmp_db):
-    """Factory: make_user(clerk_id, email, full_name, tier='free') → user dict."""
+    """Factory: make_user(clerk_id, email, full_name) → user dict."""
 
-    def _make(clerk_id: str, email: str, full_name: str = "Test User",
-              tier: str = "free") -> dict:
-        from applypilot.database import get_connection
+    def _make(clerk_id: str, email: str, full_name: str = "Test User") -> dict:
         from applypilot.web.auth import upsert_user, invalidate_user_cache
 
         invalidate_user_cache(clerk_id)
-        user = upsert_user(clerk_id, email, full_name)
-        if tier != "free":
-            conn = get_connection()
-            conn.execute("UPDATE users SET tier = ? WHERE id = ?", (tier, user["id"]))
-            conn.commit()
-            invalidate_user_cache(clerk_id)
-            user = upsert_user(clerk_id, email, full_name)
-        return user
+        return upsert_user(clerk_id, email, full_name)
 
     return _make
 

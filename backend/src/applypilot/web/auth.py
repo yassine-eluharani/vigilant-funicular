@@ -1,8 +1,7 @@
 """Clerk JWT authentication utilities and FastAPI dependency.
 
 BE-002 — Sync I/O off the event loop (Option B):
-The DB helpers (``upsert_user``, ``get_user_record``, ``maybe_reset_usage``,
-``check_and_increment_usage``, ``decrement_usage``) and the JWT verifier
+The DB helpers (``upsert_user``, ``get_user_record``) and the JWT verifier
 (``verify_clerk_jwt``) all use sync ``httpx.Client`` / ``sqlite3`` under the
 hood. Rather than rewrite them as async (which would propagate ``async`` up
 through every caller and require an ``httpx.AsyncClient``-based Turso
@@ -10,10 +9,6 @@ wrapper), we keep them sync and offload to the FastAPI threadpool at the
 async call sites via ``await asyncio.to_thread(...)``. This is the minimum
 change that unblocks the event loop while preserving all existing tests and
 sync call paths (e.g. background ``_run_task`` workers in ``web/core.py``).
-
-A future BE-002b could convert the helpers themselves to ``async def`` and
-swap to ``httpx.AsyncClient`` — but that's a much larger refactor for
-marginal additional benefit beyond what the threadpool already absorbs.
 """
 
 from __future__ import annotations
@@ -43,12 +38,6 @@ from jwt.algorithms import RSAAlgorithm
 log = logging.getLogger(__name__)
 
 _bearer = HTTPBearer(auto_error=False)
-
-# ── Tier limits ───────────────────────────────────────────────────────────────
-
-FREE_TAILOR_LIMIT = 3
-FREE_COVER_LIMIT = 1
-BLUR_SCORE_THRESHOLD = 8
 
 
 # ── Clerk JWKS verification ───────────────────────────────────────────────────
@@ -246,7 +235,7 @@ _user_cache: TTLCache[str, dict] = TTLCache(maxsize=_USER_CACHE_MAX, ttl=_USER_C
 
 # Columns that are safe + small enough to cache. Anything else (resume_text,
 # profile_json, searches_json, etc.) must NOT be cached — we re-query on demand.
-_CACHED_USER_COLUMNS = ("id", "clerk_id", "email", "full_name", "tier")
+_CACHED_USER_COLUMNS = ("id", "clerk_id", "email", "full_name")
 
 
 def _slim_user(row: dict) -> dict:
@@ -280,7 +269,7 @@ def invalidate_user_cache_by_id(user_row_id: int) -> None:
 def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict:
     """Create or update a local user row from Clerk identity.
 
-    Returns a SLIM user dict (id, clerk_id, email, full_name, tier).
+    Returns a SLIM user dict (id, clerk_id, email, full_name).
     Callers that need profile_json / resume_text / searches_json must call
     `get_user_record` or query the DB directly.
 
@@ -298,7 +287,7 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
 
     now = datetime.now(timezone.utc).isoformat()
     existing = conn.execute(
-        "SELECT id, clerk_id, email, full_name, tier FROM users WHERE clerk_id = ?",
+        "SELECT id, clerk_id, email, full_name FROM users WHERE clerk_id = ?",
         (clerk_id,),
     ).fetchone()
 
@@ -314,7 +303,7 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
             )
             conn.commit()
         row = conn.execute(
-            "SELECT id, clerk_id, email, full_name, tier FROM users WHERE clerk_id = ?",
+            "SELECT id, clerk_id, email, full_name FROM users WHERE clerk_id = ?",
             (clerk_id,),
         ).fetchone()
         result = _slim_user(dict(row))
@@ -336,7 +325,7 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
     conn.commit()
 
     row = conn.execute(
-        "SELECT id, clerk_id, email, full_name, tier FROM users WHERE clerk_id = ?",
+        "SELECT id, clerk_id, email, full_name FROM users WHERE clerk_id = ?",
         (clerk_id,),
     ).fetchone()
 
@@ -384,120 +373,19 @@ def upsert_user(clerk_id: str, email: str | None, full_name: str | None) -> dict
 # already cover what those functions did.
 
 
-# ── Tier / usage helpers ──────────────────────────────────────────────────────
+# ── User record ───────────────────────────────────────────────────────────────
 
 def get_user_record(user_id: int) -> dict:
-    """Fetch full user row including tier + usage counters."""
+    """Fetch full user row (identity + profile blob)."""
     from applypilot.database import get_connection
     conn = get_connection()
     row = conn.execute(
-        "SELECT id, email, full_name, tier, tailors_used, covers_used, usage_reset_at, profile_json "
-        "FROM users WHERE id = ?",
+        "SELECT id, email, full_name, profile_json FROM users WHERE id = ?",
         (user_id,),
     ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="User not found")
     return dict(row)
-
-
-def maybe_reset_usage(conn, user_id: int) -> None:
-    """Reset monthly usage counters when the calendar month turns over."""
-    row = conn.execute("SELECT usage_reset_at FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not row:
-        return
-    now = datetime.now(timezone.utc)
-    reset_at = row["usage_reset_at"]
-    if reset_at:
-        last = datetime.fromisoformat(reset_at)
-        if last.year == now.year and last.month == now.month:
-            return
-    conn.execute(
-        "UPDATE users SET tailors_used = 0, covers_used = 0, usage_reset_at = ? WHERE id = ?",
-        (now.isoformat(), user_id),
-    )
-    conn.commit()
-
-
-def check_and_increment_usage(user_id: int, kind: str) -> None:
-    """Atomically check the free-tier monthly limit and increment the counter.
-
-    BE-011: Previously this was a read-then-write pair, so two concurrent
-    tailor calls at `tailors_used = 2` could both pass the cap check before
-    either UPDATE landed, allowing a single user to silently exceed the cap.
-
-    The fix collapses the check + bump into a single UPDATE whose WHERE clause
-    enforces the cap. We rely on `cursor.rowcount` (works for both sqlite3 and
-    the libsql HTTP wrapper, which sets `affected_row_count` from the
-    response): if 0 rows were updated, the user is at the cap and we raise
-    402. Pro users always pass via the `tier = 'pro'` branch in the WHERE.
-
-    The counter is debited before the LLM task starts. If the task fails,
-    `_run_task` (web/core.py) calls `decrement_usage` to roll back so the
-    user isn't charged for an artifact they never received.
-    """
-    from applypilot.database import get_connection
-    conn = get_connection()
-    maybe_reset_usage(conn, user_id)
-
-    if kind == "tailor":
-        column = "tailors_used"
-        limit = FREE_TAILOR_LIMIT
-        detail = (
-            f"Free plan limit: {FREE_TAILOR_LIMIT} tailored resumes per month. "
-            "Upgrade to Pro."
-        )
-    elif kind == "cover":
-        column = "covers_used"
-        limit = FREE_COVER_LIMIT
-        detail = (
-            f"Free plan limit: {FREE_COVER_LIMIT} cover letter per month. "
-            "Upgrade to Pro."
-        )
-    else:
-        raise ValueError(f"unknown usage kind: {kind!r}")
-
-    # Single atomic UPDATE: bumps the counter only if the user is pro OR
-    # currently under the cap. If the user doesn't exist or is at the cap,
-    # rowcount comes back as 0 and we raise 402.
-    cursor = conn.execute(
-        f"UPDATE users SET {column} = {column} + 1 "
-        f"WHERE id = ? AND (tier = 'pro' OR {column} < ?)",
-        (user_id, limit),
-    )
-    conn.commit()
-
-    if cursor.rowcount == 0:
-        # Either the user is missing or they hit the cap. Distinguish so we
-        # don't mask a "user not found" as a quota error.
-        row = conn.execute(
-            "SELECT id FROM users WHERE id = ?", (user_id,)
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="User not found")
-        raise HTTPException(status_code=402, detail=detail)
-
-
-def decrement_usage(user_id: int, kind: str) -> None:
-    """Roll back a usage counter increment when an LLM task fails (BE-011).
-
-    Called by `_run_task` in `web/core.py` when a tailor/cover task ends in
-    `error` state. Idempotent: clamped at 0 via MAX so a double-call (or a
-    rollback for a pro user whose counter was 0 to begin with) never produces
-    a negative balance.
-    """
-    if kind == "tailor":
-        column = "tailors_used"
-    elif kind == "cover":
-        column = "covers_used"
-    else:
-        return  # silently ignore non-quota'd task kinds (e.g. score)
-    from applypilot.database import get_connection
-    conn = get_connection()
-    conn.execute(
-        f"UPDATE users SET {column} = MAX(0, {column} - 1) WHERE id = ?",
-        (user_id,),
-    )
-    conn.commit()
 
 
 # ── FastAPI dependency ────────────────────────────────────────────────────────

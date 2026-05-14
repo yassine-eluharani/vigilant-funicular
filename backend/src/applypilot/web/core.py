@@ -67,18 +67,6 @@ class _TaskLogHandler(logging.Handler):
             pass
 
 
-# BE-011: function name → quota kind. The tailor/cover routes pre-charge the
-# user's monthly counter before dispatching the LLM job (so two concurrent
-# tailors can't both pass the cap check). If the LLM task then fails, we
-# refund the debit. Inferring the kind from `fn.__name__` keeps `_start_task`'s
-# signature unchanged so the routes don't need to thread rollback metadata
-# through every call site.
-_ROLLBACK_KIND_BY_FN_NAME: dict[str, str] = {
-    "tailor_job_by_url": "tailor",
-    "cover_letter_by_url": "cover",
-}
-
-
 def _run_task(task_id: str, fn, *args) -> None:
     entry = _tasks.get(task_id)
     if entry is None:
@@ -105,27 +93,6 @@ def _run_task(task_id: str, fn, *args) -> None:
         if e is not None:
             e.update({"status": "done", "result": result})
     except Exception as exc:
-        # BE-011 rollback: the route pre-charged the user's free-tier counter
-        # before dispatching the task. The artifact never landed, so refund
-        # the debit BEFORE marking the task as `error` — otherwise SSE/poll
-        # consumers can observe the terminal status while the counter is
-        # still debited (a window the rollback integration test pins).
-        # Errors during rollback are swallowed: the task is already in a bad
-        # state and we don't want to mask the original exception.
-        kind = _ROLLBACK_KIND_BY_FN_NAME.get(getattr(fn, "__name__", ""))
-        if kind and len(args) >= 2:
-            # tailor_job_by_url(job_url, user_id, validation_mode) and
-            # cover_letter_by_url(job_url, user_id, validation_mode) both
-            # carry user_id at args[1].
-            user_id = args[1]
-            try:
-                from applypilot.web.auth import decrement_usage
-                decrement_usage(user_id, kind)
-            except Exception:  # pragma: no cover — defensive
-                log.exception(
-                    "failed to roll back usage counter for task %s "
-                    "(user_id=%s kind=%s)", task_id, user_id, kind,
-                )
         e = _tasks.get(task_id)
         if e is not None:
             e.update({"status": "error", "error": str(exc)})
@@ -147,6 +114,38 @@ def _start_task(fn, *args) -> str:
         }
     # BE-012: submit to bounded pool instead of spawning unbounded threads.
     _executor.submit(_run_task, task_id, fn, *args)
+    return task_id
+
+
+# ---------------------------------------------------------------------------
+# In-flight de-dup for keyed tasks (auto-tailor + manual click race)
+# ---------------------------------------------------------------------------
+#
+# Modeled on `_score_task_by_user` below. Keyed lookup by tuple
+# (kind, user_id, job_url) — if a task with that key is already pending or
+# running, return its existing task_id instead of submitting a duplicate.
+# Closes the race where the post-score auto-tailor enqueues a job at the same
+# time the user clicks "Tailor" manually for the same job.
+
+_inflight_task_by_key: TTLCache[tuple, str] = TTLCache(maxsize=10_000, ttl=3600)
+_inflight_lock = threading.Lock()
+
+
+def _start_task_unique(key: tuple, fn, *args) -> str:
+    """Like `_start_task`, but de-dup by `key` so concurrent callers share one task.
+
+    If a task with this key is currently pending or running, returns its
+    existing task_id without dispatching a second LLM call. Otherwise starts
+    a new task and records its id under the key.
+    """
+    with _inflight_lock:
+        existing_id = _inflight_task_by_key.get(key)
+        if existing_id:
+            existing = _tasks.get(existing_id)
+            if existing and existing.get("status") in ("pending", "running"):
+                return existing_id
+        task_id = _start_task(fn, *args)
+        _inflight_task_by_key[key] = task_id
     return task_id
 
 

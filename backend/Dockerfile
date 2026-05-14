@@ -6,7 +6,10 @@
 # Dependabot's Docker support) is the correct long-term fix.
 FROM python:3.12-slim AS builder
 
-WORKDIR /build
+# WORKDIR matches the production stage (/app) so the editable install's
+# egg-link points at /app/src — which exists in BOTH stages (final stage
+# COPYs src there, dev compose bind-mounts source there for hot reload).
+WORKDIR /app
 
 # Build deps (gcc) live ONLY in the builder image so the final image stays
 # slim (INF-017).
@@ -37,6 +40,9 @@ RUN pip install --no-cache-dir --timeout 120 --retries 5 \
         -r requirements.lock
 
 # Now copy the source and install the package itself without touching deps.
+# Editable install (`-e`) so dev's bind-mount (/app/src) is picked up live.
+# WORKDIR /app above ensures the egg-link points to /app/src — a path that
+# also exists in the production stage (which COPYs src to /app/src).
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps -e .
 

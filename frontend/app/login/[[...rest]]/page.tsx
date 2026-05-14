@@ -7,7 +7,7 @@ import Link from "next/link";
 
 function LoginPanel() {
   const params = useSearchParams();
-  const next = params.get("next") ?? "/jobs";
+  const next = params.get("next") ?? "/apply";
 
   return (
     <div className="min-h-screen flex">

@@ -18,7 +18,7 @@ from applypilot.web.middleware import (
     install_request_id_logging,
     request_id_var,  # noqa: F401  (re-exported for other modules)
 )
-from applypilot.web.routers import auth, jobs, pipeline, config, stream, stripe_router
+from applypilot.web.routers import auth, jobs, pipeline, config, stream
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,7 +66,7 @@ async def lifespan(_app):
     from applypilot.database import init_db, cleanup_old_jobs, cleanup_closed_jobs
     from applypilot.web.core import mark_orphan_tasks_on_startup
     await asyncio.to_thread(init_db)
-    await asyncio.to_thread(cleanup_old_jobs, 60)
+    await asyncio.to_thread(cleanup_old_jobs, 3)
     await asyncio.to_thread(cleanup_closed_jobs, 7)
     mark_orphan_tasks_on_startup()  # TST-015: flag in-flight tasks lost to restart
     yield
@@ -104,7 +104,6 @@ def health() -> JSONResponse:
 
 
 app.include_router(auth.router)           # public — no auth dependency
-app.include_router(stripe_router.router)  # public — webhook must be unauthenticated
 app.include_router(jobs.router)
 app.include_router(pipeline.router)
 app.include_router(config.router)

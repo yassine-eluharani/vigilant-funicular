@@ -176,16 +176,9 @@ export async function parseResumeCv(text: string): Promise<{ ok: boolean; extrac
   });
 }
 
-// ── User / Tier ───────────────────────────────────────────────────────────────
+// ── User ──────────────────────────────────────────────────────────────────────
 
 export const getMe = (): Promise<UserInfo> => req("/api/auth/me");
-
-/** Create a Stripe Checkout session and return the redirect URL. */
-export const createCheckoutSession = (): Promise<{ checkout_url: string }> =>
-  req("/api/stripe/create-checkout", { method: "POST" });
-
-export const createBillingPortalSession = (): Promise<{ portal_url: string }> =>
-  req("/api/stripe/billing-portal", { method: "POST" });
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 

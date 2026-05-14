@@ -425,10 +425,6 @@ def init_db(db_path: Path | str | None = None) -> sqlite3.Connection:
                 full_name     TEXT NOT NULL,
                 created_at    TEXT NOT NULL,
                 last_login    TEXT,
-                tier                 TEXT DEFAULT 'free',
-                tailors_used         INTEGER DEFAULT 0,
-                covers_used          INTEGER DEFAULT 0,
-                usage_reset_at       TEXT,
                 searches_json        TEXT,
                 profile_json         TEXT,
                 resume_text          TEXT,
@@ -608,16 +604,10 @@ def ensure_columns(conn: sqlite3.Connection | None = None) -> list[str]:
 
 _USER_EXTRA_COLUMNS: dict[str, str] = {
     "clerk_id": "TEXT",  # UNIQUE enforced via index
-    "tier": "TEXT DEFAULT 'free'",
-    "tailors_used": "INTEGER DEFAULT 0",
-    "covers_used": "INTEGER DEFAULT 0",
-    "usage_reset_at": "TEXT",
     "searches_json": "TEXT",
     "profile_json": "TEXT",
     "resume_text": "TEXT",
     "email_notifications": "INTEGER DEFAULT 0",
-    "stripe_customer_id": "TEXT",
-    "stripe_subscription_id": "TEXT",
 }
 
 _USER_JOBS_COLUMNS: dict[str, str] = {
@@ -660,17 +650,6 @@ def ensure_user_columns(conn: sqlite3.Connection | None = None) -> None:
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_clerk_id ON users(clerk_id)"
     )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_users_stripe_subscription_id "
-        "ON users(stripe_subscription_id)"
-    )
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS stripe_processed_events (
-            event_id     TEXT PRIMARY KEY,
-            event_type   TEXT,
-            processed_at TEXT NOT NULL
-        )
-    """)
     conn.commit()
 
     # Ensure user_jobs table exists and has all columns
@@ -1039,34 +1018,67 @@ def get_stats(conn: sqlite3.Connection | None = None, user_id: int | None = None
     return stats
 
 
-def cleanup_old_jobs(days: int = 60, conn: sqlite3.Connection | None = None) -> int:
-    """Delete jobs older than `days` days that no user has scored, tailored, or applied to.
+_ENGAGED_USER_JOBS_FILTER = """
+    SELECT DISTINCT job_url FROM user_jobs
+    WHERE fit_score             IS NOT NULL
+       OR tailored_resume_path  IS NOT NULL
+       OR tailored_resume_text  IS NOT NULL
+       OR cover_letter_path     IS NOT NULL
+       OR cover_letter_text     IS NOT NULL
+       OR favorited = 1
+       OR applied_at            IS NOT NULL
+"""
 
-    Jobs with any meaningful user_jobs record are preserved regardless of age.
-    Returns the number of rows deleted.
+
+def cleanup_old_jobs(days: int = 3, conn: sqlite3.Connection | None = None,
+                     batch_size: int = 500) -> int:
+    """Delete jobs older than `days` days that no user has engaged with.
+
+    Engagement = scored, tailored (text or path), cover-lettered (text or path),
+    favorited, or applied. Engaged jobs are preserved regardless of age so the
+    user keeps their application history.
+
+    Pre-filter reject rows in `user_jobs` (e.g. ``apply_status='location_filtered'``
+    with no fit_score/tailor/cover/applied_at) are not engagement; they are
+    cascade-deleted alongside the parent job to satisfy the FK constraint.
+
+    Batched in chunks of `batch_size` URLs so a multi-thousand-row purge fits
+    within Turso's HTTP request budget instead of timing out.
+
+    Returns the total number of `jobs` rows deleted.
     """
     if conn is None:
         conn = get_connection()
-    cursor = conn.execute(
-        """
-        DELETE FROM jobs
-        WHERE discovered_at < datetime('now', ?)
-        AND url NOT IN (
-            SELECT DISTINCT job_url FROM user_jobs
-            WHERE fit_score IS NOT NULL
-               OR tailored_resume_path IS NOT NULL
-               OR cover_letter_path IS NOT NULL
-               OR applied_at IS NOT NULL
-        )
-        """,
-        (f"-{days} days",),
-    )
-    deleted = cursor.rowcount
+
+    total_deleted = 0
+    while True:
+        rows = conn.execute(
+            f"""
+            SELECT url FROM jobs
+            WHERE discovered_at < datetime('now', ?)
+              AND url NOT IN ({_ENGAGED_USER_JOBS_FILTER})
+            LIMIT ?
+            """,
+            (f"-{days} days", batch_size),
+        ).fetchall()
+        if not rows:
+            break
+        urls = [r["url"] if isinstance(r, dict) else r[0] for r in rows]
+        placeholders = ",".join("?" for _ in urls)
+        # Cascade-delete unengaged user_jobs rows (pre-filter rejects) first so
+        # the FK on user_jobs.job_url -> jobs.url doesn't block the parent DELETE.
+        conn.execute(f"DELETE FROM user_jobs WHERE job_url IN ({placeholders})", urls)
+        cur = conn.execute(f"DELETE FROM jobs WHERE url IN ({placeholders})", urls)
+        n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else len(urls)
+        total_deleted += n
+
     conn.commit()
-    if deleted:
+    if total_deleted:
         import logging as _logging
-        _logging.getLogger(__name__).info("Cleanup: deleted %d jobs older than %d days", deleted, days)
-    return deleted
+        _logging.getLogger(__name__).info(
+            "Cleanup: deleted %d jobs older than %d days", total_deleted, days
+        )
+    return total_deleted
 
 
 def cleanup_closed_jobs(grace_days: int = 7, conn: sqlite3.Connection | None = None) -> int:

@@ -44,16 +44,11 @@ class _RequestModel(BaseModel):
 
 
 class MeResponse(_ResponseModel):
-    """GET /api/auth/me — current user identity + tier + usage."""
+    """GET /api/auth/me — current user identity."""
     id: int
     email: str
     full_name: str
-    tier: Literal["free", "pro"]
     has_profile: bool
-    tailors_used: int
-    covers_used: int
-    tailor_limit: Optional[int] = None
-    cover_limit: Optional[int] = None
 
 
 # === jobs ===================================================================
@@ -91,7 +86,6 @@ class JobItem(_ResponseModel):
     has_pdf: bool = False
     has_cover_pdf: bool = False
     favorited: Optional[bool] = None
-    locked: Optional[bool] = None
 
     # Detail-only fields (only present on single-job fetch)
     resume_text: Optional[str] = None
@@ -141,7 +135,6 @@ class StatsResponse(_ResponseModel):
     interviews: int
     offers: int
     rejected: int
-    locked_count: int
     sites: list[str]
     score_distribution: dict[str, int]
     funnel: FunnelStats
@@ -402,25 +395,6 @@ class SchedulerStatusResponse(_ResponseModel):
     """GET /api/scheduler/status — last discovery-worker sync info."""
     last_sync: Optional[str] = None
     jobs_found: int = 0
-
-
-# === stripe =================================================================
-
-
-class CreateCheckoutResponse(_ResponseModel):
-    checkout_url: str
-
-
-class CreateBillingPortalResponse(_ResponseModel):
-    portal_url: str
-
-
-class StripeWebhookResponse(_ResponseModel):
-    """POST /api/stripe/webhook — generic ack. The webhook payload itself is
-    untyped (Stripe's event shape is enormous); we only model the response.
-    """
-    received: bool
-    duplicate: Optional[bool] = None
 
 
 # === stream =================================================================

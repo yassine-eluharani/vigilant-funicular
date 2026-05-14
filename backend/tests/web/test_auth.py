@@ -189,7 +189,7 @@ def test_user_cache_is_bounded(monkeypatch):
 
     for i in range(20):
         small[f"clerk_{i}"] = {"id": i, "clerk_id": f"clerk_{i}",
-                               "email": f"u{i}@x", "full_name": "x", "tier": "free"}
+                               "email": f"u{i}@x", "full_name": "x"}
 
     assert len(small) <= 5
 
@@ -214,7 +214,7 @@ def test_user_cache_excludes_heavy_columns(make_user, mock_jwks, db_conn):
     for forbidden in ("resume_text", "profile_json", "searches_json"):
         assert forbidden not in cached, f"{forbidden} must not be cached"
     # Slim shape contract
-    for required in ("id", "clerk_id", "email", "full_name", "tier"):
+    for required in ("id", "clerk_id", "email", "full_name"):
         assert required in fresh
 
 

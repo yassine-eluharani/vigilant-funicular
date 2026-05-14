@@ -1,20 +1,16 @@
 /**
  * Shared route stubs for E2E tests.
  *
- * Tests should never hit a real backend, real Clerk, or real Stripe. Every
+ * Tests should never hit a real backend or real Clerk. Every
  * `/api/*` call is intercepted with `page.route(...)` here.
  */
 import type { Page, Route } from "@playwright/test";
 
 export const FAKE_USER = {
-  user: {
-    id: "user_test_123",
-    email: "test@applypilot.dev",
-    full_name: "Test User",
-    tier: "pro" as const,
-    usage: { tailors_used: 0, covers_used: 0 },
-    limits: { tailors: -1, covers: -1 },
-  },
+  id: 1,
+  email: "test@applypilot.dev",
+  full_name: "Test User",
+  has_profile: true,
 };
 
 export const FAKE_JOB = {
@@ -33,7 +29,6 @@ export const FAKE_JOB = {
   resume_text: null as string | null,
   cover_letter_text: null as string | null,
   favorited: false,
-  locked: false,
 };
 
 export const FAKE_STATS = {

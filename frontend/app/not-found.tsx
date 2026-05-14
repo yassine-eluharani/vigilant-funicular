@@ -8,10 +8,10 @@ export default function NotFound() {
         <h1 className="text-xl font-semibold text-void-text mb-2">Page not found</h1>
         <p className="text-sm text-void-muted mb-8">The page you&apos;re looking for doesn&apos;t exist.</p>
         <Link
-          href="/jobs"
+          href="/apply"
           className="px-5 py-2.5 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-indigo-500 transition-colors"
         >
-          Back to jobs
+          Back to dashboard
         </Link>
       </div>
     </div>

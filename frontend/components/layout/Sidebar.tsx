@@ -15,8 +15,17 @@ import { useAuth } from "@/contexts/AuthContext";
 
 const NAV = [
   {
+    href: "/apply",
+    label: "Apply",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+        <path d="M10.868 2.884c-.321-.772-1.415-.772-1.736 0l-1.83 4.401-4.753.381c-.833.067-1.171 1.107-.536 1.651l3.62 3.102-1.106 4.637c-.194.813.691 1.456 1.405 1.02L10 15.591l4.069 2.485c.713.436 1.598-.207 1.404-1.02l-1.106-4.637 3.62-3.102c.635-.544.297-1.584-.536-1.65l-4.752-.382-1.831-4.4Z" />
+      </svg>
+    ),
+  },
+  {
     href: "/jobs",
-    label: "Jobs",
+    label: "Archive",
     icon: (
       <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
         <path d="M6 3a1 1 0 0 0-1 1v1H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V4a1 1 0 0 0-1-1H6Zm5 10a1 1 0 1 1-2 0 1 1 0 0 1 2 0ZM7 4h6v1H7V4Z" />
@@ -79,7 +88,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
         {/* Logo */}
         <div className="flex items-center justify-center h-14 border-b border-void-border shrink-0">
           <Link
-            href="/jobs"
+            href="/apply"
             aria-label="ApplyPilot home"
             title="ApplyPilot"
             className="w-8 h-8 rounded-lg bg-void-accent flex items-center justify-center hover:bg-void-accent-hover transition-colors"

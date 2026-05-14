@@ -34,7 +34,6 @@ dependencies = [
     "pyjwt[crypto]>=2.8",
     "cachetools>=5.3",
     "pypdf>=4.0",
-    "stripe>=7.0",
 ]
 
 [project.optional-dependencies]

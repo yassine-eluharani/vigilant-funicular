@@ -972,7 +972,7 @@ export default function SetupPage() {
       // Kick off scoring immediately — profile + resume are now saved
       maybeScore().catch(() => null);
 
-      router.replace("/jobs");
+      router.replace("/apply");
     } catch (e) {
       console.error(e);
     } finally {
@@ -1054,7 +1054,7 @@ export default function SetupPage() {
                 </button>
               ) : (
                 <button
-                  onClick={() => router.replace("/jobs")}
+                  onClick={() => router.replace("/apply")}
                   className="px-4 py-2 rounded-lg text-sm text-void-subtle hover:text-void-muted transition-colors"
                 >
                   Skip setup

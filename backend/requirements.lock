@@ -106,9 +106,7 @@ pyyaml==6.0.3
 regex==2024.11.6
     # via python-jobspy
 requests==2.33.1
-    # via
-    #   python-jobspy
-    #   stripe
+    # via python-jobspy
 rich==15.0.0
     # via applypilot (pyproject.toml)
 six==1.17.0
@@ -126,8 +124,6 @@ sqlmodel==0.0.38
     # via applypilot (pyproject.toml)
 starlette==1.0.0
     # via fastapi
-stripe==15.1.0
-    # via applypilot (pyproject.toml)
 tls-client==1.0.1
     # via python-jobspy
 typing-extensions==4.15.0
@@ -142,7 +138,6 @@ typing-extensions==4.15.0
     #   sqlalchemy
     #   sqlmodel
     #   starlette
-    #   stripe
     #   typing-inspection
 typing-inspection==0.4.2
     # via

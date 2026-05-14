@@ -1,6 +1,6 @@
 # ApplyPilot
 
-Multi-user SaaS platform: a background discovery worker continuously populates a shared job database; users log in, see jobs scored against their CV, then tailor resumes and generate cover letters per job.
+Personal job-application tool: a background discovery worker continuously populates a shared job database; the owner (and optionally a few family members) log in, see jobs scored against their CV, and find tailored CVs + cover letters auto-generated for the highest-fit (9–10) postings.
 
 **Fullstack monorepo** — Next.js frontend + FastAPI backend + Docker.
 **Discovery worker** lives in a separate repo (`applypilot-discovery`) and shares the same Turso DB.
@@ -13,7 +13,6 @@ Multi-user SaaS platform: a background discovery worker continuously populates a
 - **Backend**: Python 3.11+, FastAPI, Turso (libSQL via HTTP) or SQLite (WAL mode, dev)
 - **Auth**: Clerk (RS256 JWTs — no passwords stored)
 - **LLM**: Gemini (default), OpenAI, or local (Ollama/llama.cpp) — auto-detected from env vars
-- **Payments**: Stripe Checkout + webhook
 - **Infra**: Docker + Docker Compose (dev + prod), nginx reverse proxy
 
 ## Project Layout (top-level)
@@ -39,12 +38,9 @@ Browser → nginx → Next.js + FastAPI → Turso (shared with `applypilot-disco
 
 The discovery worker runs `discover → enrich → filter → index` on its own schedule. The main platform only runs `score` (per-user) and on-demand `tailor` / `cover`. See KB `architecture/data-flow` and `pipeline/_index` for details.
 
-## Tier System
+## Auto-generation policy
 
-- **Free**: 3 tailors/month, 1 cover letter/month. Jobs scoring ≥ 8 are blurred (`locked: true`).
-- **Pro**: Unlimited tailors + cover letters. All jobs visible.
-
-Upgrade flow: free user clicks "Upgrade" → Stripe Checkout → webhook → `tier='pro'` in DB. Falls back to direct upgrade when `STRIPE_SECRET_KEY` not set.
+After each scoring run, any job with `fit_score >= 9` that doesn't already have a tailored CV + cover letter gets one queued automatically. Capped at 5 jobs per pipeline run via `MAX_AUTO_GENS_PER_RUN` in `backend/src/applypilot/pipeline.py`. Lower-scored jobs (7–8) remain user-initiated via the manual Tailor / Cover buttons.
 
 ## User Config (stored in `users` DB row)
 
@@ -71,13 +67,6 @@ DATABASE_TOKEN=...
 GEMINI_API_KEY=...
 OPENAI_API_KEY=...    # alternative
 LLM_MODEL=...         # override model
-
-# Stripe (optional — enables paid upgrades)
-STRIPE_SECRET_KEY=sk_live_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_ID=price_...
-STRIPE_SUCCESS_URL=http://yourdomain.com/jobs?upgraded=true
-STRIPE_CANCEL_URL=http://yourdomain.com/pricing
 
 # Email notifications (optional — one of the two)
 RESEND_API_KEY=re_...
@@ -168,7 +157,7 @@ When a task matches an active skill's trigger (listed in the disposition below),
   - Editing Python beyond a one-liner → `python-pro`
   - Editing Next.js pages, layouts, route handlers → `nextjs-developer`
   - Editing TS types, generics, type guards → `typescript-pro`
-  - Touching auth, Stripe webhooks, multi-user data isolation → `secure-code-guardian`
+  - Touching auth or multi-user data isolation → `secure-code-guardian`
   - Writing/debugging Playwright (liveness checks, future E2E) → `playwright-expert`
   - Editing Dockerfiles, compose files, nginx config → `devops-engineer`
   - Building UI components or pages with design intent → `frontend-design`
@@ -181,7 +170,7 @@ If multiple skills match, invoke the most specific one first. Skip if the task i
 **Active in this project:**
 - `fastapi-expert` (plugin-skill from `fullstack-dev-skills`) — backend framework match
 - `python-pro` (plugin-skill from `fullstack-dev-skills`) — Python 3.11+ codebase
-- `secure-code-guardian` (plugin-skill from `fullstack-dev-skills`) — JWT, Stripe webhook, multi-user data isolation surface
+- `secure-code-guardian` (plugin-skill from `fullstack-dev-skills`) — JWT, multi-user data isolation surface
 - `nextjs-developer` (plugin-skill from `fullstack-dev-skills`) — Next.js 16 App Router with route groups
 - `typescript-pro` (plugin-skill from `fullstack-dev-skills`) — TS frontend with Job/Stats/Task type system
 - `playwright-expert` (plugin-skill from `fullstack-dev-skills`) — Playwright now in backend container for liveness checks

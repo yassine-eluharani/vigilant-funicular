@@ -27,9 +27,7 @@ log_format applypilot '$remote_addr - $remote_user [$time_local] '
                       '$status $body_bytes_sent "$http_referer" "$http_user_agent"';
 
 # ── Edge rate limiting (INF-010) ──────────────────────────────────────────────
-# 10r/s per IP for general API; 2r/s for /api/auth/. Stripe webhook is exempt
-# (see location block below) — Stripe's source IPs vary and rate-limiting them
-# would cause false-positive "endpoint down" reports.
+# 10r/s per IP for general API; 2r/s for /api/auth/.
 limit_req_zone $binary_remote_addr zone=api:10m  rate=10r/s;
 limit_req_zone $binary_remote_addr zone=auth:10m rate=2r/s;
 

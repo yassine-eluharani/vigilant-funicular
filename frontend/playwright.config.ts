@@ -5,7 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
  *
  * Goals:
  *   - All `/api/*` calls are stubbed via `route.fulfill` so tests run without
- *     a live backend or Stripe / Clerk credentials.
+ *     a live backend or Clerk credentials.
  *   - The dev server is auto-started by Playwright on port 3000.
  *   - `NEXT_PUBLIC_TEST_MODE=1` is set so the frontend can opt-out of Clerk
  *     middleware in tests if/when that wiring lands. Until then, tests that

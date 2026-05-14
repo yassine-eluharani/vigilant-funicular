@@ -25,11 +25,7 @@ from applypilot.database import (
     mark_liveness_checked,
 )
 from applypilot.enrichment.liveness import UnsafeUrlError, verify_job_open
-from applypilot.web.auth import (
-    get_current_user,
-    check_and_increment_usage,
-    BLUR_SCORE_THRESHOLD,
-)
+from applypilot.web.auth import get_current_user
 from applypilot.web.core import _start_task, decode_url, row_to_job, tailor_limiter, cover_limiter
 from applypilot.web.schemas import (
     CoverResponse,
@@ -133,9 +129,8 @@ def stats(user: dict = Depends(get_current_user)) -> dict:
 
     s = get_stats(user_id=user_id)
     conn = get_connection()
-    is_free = user["tier"] == "free"
 
-    # Batch the 4 extra queries that the router needs beyond get_stats()
+    # Batch the 3 extra queries that the router needs beyond get_stats()
     extra_stmts: list[tuple[str, tuple]] = [
         (
             "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? "
@@ -153,17 +148,11 @@ def stats(user: dict = Depends(get_current_user)) -> dict:
             "WHERE uj.tailored_resume_path IS NOT NULL AND j.site IS NOT NULL ORDER BY j.site",
             (user_id,),
         ),
-        (
-            "SELECT COUNT(*) FROM user_jobs WHERE user_id = ? AND fit_score >= ? "
-            "AND (apply_status IS NULL OR apply_status NOT IN ('dismissed','location_filtered'))",
-            (user_id, BLUR_SCORE_THRESHOLD) if is_free else (user_id, 999),
-        ),
     ]
     er = batch_query(conn, extra_stmts)
     pending      = er[0].fetchone()[0]
     dismissed    = er[1].fetchone()[0]
     sites        = er[2].fetchall()
-    locked_count = er[3].fetchone()[0] if is_free else 0
 
     payload = {
         "tailored": s["tailored"],
@@ -176,7 +165,6 @@ def stats(user: dict = Depends(get_current_user)) -> dict:
         "interviews": s["interviews"],
         "offers": s["offers"],
         "rejected": s["rejected"],
-        "locked_count": locked_count,
         "sites": [r[0] for r in sites],
         "score_distribution": {str(sc): ct for sc, ct in s["score_distribution"]},
         "funnel": {
@@ -320,23 +308,7 @@ def list_jobs(
         params + [limit, offset],
     ).fetchall()
 
-    # Apply free-tier blur
-    is_free = user["tier"] == "free"
-
-    jobs_out = []
-    for r in rows:
-        job = row_to_job(r)
-        if is_free and (job.get("fit_score") or 0) >= BLUR_SCORE_THRESHOLD:
-            job["locked"] = True
-            job["company"] = None
-            job["score_reasoning"] = None
-            job["application_url"] = None
-            job["has_pdf"] = False
-            job["has_cover_pdf"] = False
-        else:
-            job["locked"] = False
-        jobs_out.append(job)
-
+    jobs_out = [row_to_job(r) for r in rows]
     return {"jobs": jobs_out, "total": total, "offset": offset, "limit": limit}
 
 
@@ -505,9 +477,6 @@ async def tailor_job(
     tailor_limiter.check(user["id"])
     job_url = decode_url(encoded_url)
     await _ensure_job_open_or_410(job_url)
-    # Only count usage after we've confirmed the posting is still open.
-    # BE-002: ``check_and_increment_usage`` does a sync UPDATE — offload it.
-    await asyncio.to_thread(check_and_increment_usage, user["id"], "tailor")
     from applypilot.scoring.tailor import tailor_job_by_url
     task_id = _start_task(tailor_job_by_url, job_url, user["id"], validation_mode)
     return TailorResponse(task_id=task_id)
@@ -537,8 +506,6 @@ async def cover_job(
     cover_limiter.check(user["id"])
     job_url = decode_url(encoded_url)
     await _ensure_job_open_or_410(job_url)
-    # BE-002: sync UPDATE — offload to threadpool.
-    await asyncio.to_thread(check_and_increment_usage, user["id"], "cover")
     from applypilot.scoring.cover_letter import cover_letter_by_url
     task_id = _start_task(cover_letter_by_url, job_url, user["id"], validation_mode)
     return CoverResponse(task_id=task_id)

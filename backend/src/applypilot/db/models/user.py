@@ -11,10 +11,6 @@ class User(SQLModel, table=True):
     full_name: str
     created_at: str
     last_login: Optional[str] = None
-    tier: str = Field(default="free")
-    tailors_used: int = Field(default=0)
-    covers_used: int = Field(default=0)
-    usage_reset_at: Optional[str] = None
     searches_json: Optional[str] = None
     profile_json: Optional[str] = None
     resume_text: Optional[str] = None

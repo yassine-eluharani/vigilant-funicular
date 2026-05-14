@@ -27,7 +27,6 @@ export interface Job {
   has_pdf: boolean;
   has_cover_pdf: boolean;
   favorited?: boolean;
-  locked?: boolean;
   // Detail fields (only present on single-job fetch)
   resume_text?: string;
   cover_letter_text?: string;
@@ -36,18 +35,13 @@ export interface Job {
   closed_reason?: string | null;
 }
 
-// ── User / Tier ───────────────────────────────────────────────────────────────
+// ── User ──────────────────────────────────────────────────────────────────────
 
 export interface UserInfo {
   id: number;
   email: string;
   full_name: string;
-  tier: "free" | "pro";
   has_profile: boolean;
-  tailors_used: number;
-  covers_used: number;
-  tailor_limit: number | null;
-  cover_limit: number | null;
 }
 
 export interface JobsResponse {
@@ -90,7 +84,6 @@ export interface Stats {
   interviews: number;
   offers: number;
   rejected: number;
-  locked_count: number;
   sites: string[];
   score_distribution: Record<string, number>;
   funnel: Funnel;
