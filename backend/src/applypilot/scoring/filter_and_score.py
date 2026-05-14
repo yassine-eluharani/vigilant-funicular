@@ -54,7 +54,13 @@ def _passes_rules(meta: dict, profile: dict) -> tuple[bool, str]:
     # only have a single `country` field).
     target_countries = [c.lower() for c in personal.get("target_countries", []) if isinstance(c, str)]
     acceptable_countries = ([user_country] if user_country else []) + target_countries
-    user_years = exp.get("years_of_experience", 0) or 0
+    # Support both `years_of_experience` (legacy) and the field name the
+    # /setup wizard actually writes today (`years_of_experience_total`).
+    user_years = (
+        exp.get("years_of_experience_total")
+        or exp.get("years_of_experience")
+        or 0
+    )
     target_seniority = [s.lower() for s in exp.get("target_seniority", [])]
 
     def _country_matches(job_country: str) -> bool:
@@ -134,7 +140,13 @@ def _heuristic_score(meta: dict, profile: dict) -> float:
         score += 60 * jaccard  # max 60 points from skills
 
     exp = profile.get("experience", {})
-    user_years = exp.get("years_of_experience", 0) or 0
+    # Support both `years_of_experience` (legacy) and the field name the
+    # /setup wizard actually writes today (`years_of_experience_total`).
+    user_years = (
+        exp.get("years_of_experience_total")
+        or exp.get("years_of_experience")
+        or 0
+    )
     exp_min = meta.get("experience_years_min")
     exp_max = meta.get("experience_years_max")
 
