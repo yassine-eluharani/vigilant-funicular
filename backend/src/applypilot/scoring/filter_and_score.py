@@ -71,15 +71,21 @@ def _passes_rules(meta: dict, profile: dict) -> tuple[bool, str]:
         if location_country and user_country and location_country not in user_country and user_country not in location_country:
             return False, "onsite_wrong_country"
 
-    # Experience gap
+    # Experience gap. Skip the check entirely when the user hasn't filled
+    # their profile yet (user_years == 0) — otherwise every job with
+    # experience_years_min >= 3 gets auto-rejected before the user has had
+    # a chance to upload a CV, which makes the new-user experience look
+    # broken (the /apply page shows nothing because nothing passed the
+    # filter).
     exp_min = meta.get("experience_years_min")
     exp_max = meta.get("experience_years_max")
-    if exp_min is not None and isinstance(exp_min, (int, float)):
-        if user_years < exp_min - 2:  # allow 2-year grace
-            return False, "experience_gap"
-    if exp_max is not None and isinstance(exp_max, (int, float)):
-        if user_years > exp_max + 5:  # overqualified by >5y
-            return False, "overqualified"
+    if user_years > 0:
+        if exp_min is not None and isinstance(exp_min, (int, float)):
+            if user_years < exp_min - 2:  # allow 2-year grace
+                return False, "experience_gap"
+        if exp_max is not None and isinstance(exp_max, (int, float)):
+            if user_years > exp_max + 5:  # overqualified by >5y
+                return False, "overqualified"
 
     # Seniority
     job_seniority = (meta.get("seniority") or "").lower()
