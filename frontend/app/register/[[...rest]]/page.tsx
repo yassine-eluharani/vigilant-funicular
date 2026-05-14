@@ -1,6 +1,7 @@
 "use client";
 
 import { SignUp } from "@clerk/nextjs";
+import { dark } from "@clerk/themes";
 import Link from "next/link";
 
 export default function RegisterPage() {
@@ -57,27 +58,39 @@ export default function RegisterPage() {
             forceRedirectUrl="/setup"
             signInUrl="/login"
             appearance={{
+              // baseTheme: dark — see comment in /login for why this is
+              // required to repaint Clerk's internal labels (social-button
+              // text, error states, etc.) that the variables block alone
+              // doesn't reach.
+              baseTheme: dark,
               variables: {
-                colorPrimary: "#6366f1",
-                colorBackground: "#0d0d1a",
-                colorInputBackground: "#13131f",
-                colorText: "#e2e8f0",
-                colorTextSecondary: "#94a3b8",
-                colorInputText: "#e2e8f0",
-                colorNeutral: "#1e1e30",
+                colorPrimary: "#7C7CF5",
+                colorBackground: "#0A0A0F",
+                colorInputBackground: "#14141C",
+                colorText: "#E2E8F0",
+                colorTextSecondary: "#9CA3AF",
+                colorInputText: "#E2E8F0",
+                colorNeutral: "#1E1E2A",
+                colorDanger: "#EF4444",
                 borderRadius: "0.5rem",
                 fontFamily: "var(--font-sans), sans-serif",
               },
               elements: {
-                card: "shadow-none border border-white/[0.06] bg-[#0d0d1a]",
+                card: "shadow-none border border-white/[0.06] bg-[#0A0A0F]",
                 headerTitle: "text-void-text",
                 headerSubtitle: "text-void-muted",
                 formButtonPrimary: "bg-void-accent hover:bg-indigo-500 text-white text-sm",
-                formFieldInput: "bg-[#13131f] border-white/10 text-void-text",
+                formFieldInput: "bg-[#14141C] border-white/10 text-void-text",
+                formFieldLabel: "text-void-text",
                 footerActionLink: "text-void-accent hover:text-indigo-400",
+                footerActionText: "text-void-muted",
                 dividerLine: "bg-white/10",
                 dividerText: "text-void-subtle",
-                socialButtonsBlockButton: "border-white/10 text-void-text hover:bg-white/5",
+                socialButtonsBlockButton:
+                  "border-white/10 text-void-text bg-[#14141C] hover:bg-white/5",
+                socialButtonsBlockButtonText: "text-void-text",
+                socialButtonsProviderIcon: "brightness-110",
+                identityPreviewText: "text-void-text",
               },
             }}
           />

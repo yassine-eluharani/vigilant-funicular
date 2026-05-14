@@ -2,6 +2,7 @@
 
 import { Suspense } from "react";
 import { SignIn } from "@clerk/nextjs";
+import { dark } from "@clerk/themes";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 
@@ -65,14 +66,21 @@ function LoginPanel() {
             forceRedirectUrl={next}
             signUpUrl="/register"
             appearance={{
+              // baseTheme: dark — Clerk ships a maintained dark token set
+              // (text, borders, secondary surfaces, OAuth button labels…).
+              // Without it the variables.colorText override only repaints
+              // the obvious headings and leaves Clerk's internal labels
+              // (e.g. social-button text, error states) on default light.
+              baseTheme: dark,
               variables: {
                 colorPrimary: "#7C7CF5",
                 colorBackground: "#0A0A0F",
                 colorInputBackground: "#14141C",
                 colorText: "#E2E8F0",
-                colorTextSecondary: "#6B6B7A",
+                colorTextSecondary: "#9CA3AF",
                 colorInputText: "#E2E8F0",
                 colorNeutral: "#1E1E2A",
+                colorDanger: "#EF4444",
                 borderRadius: "0.5rem",
                 fontFamily: "var(--font-sans), sans-serif",
               },
@@ -82,10 +90,16 @@ function LoginPanel() {
                 headerSubtitle: "text-void-muted",
                 formButtonPrimary: "bg-[var(--void-accent)] hover:bg-indigo-500 text-white text-sm",
                 formFieldInput: "bg-[#14141C] border-white/10 text-void-text",
+                formFieldLabel: "text-void-text",
                 footerActionLink: "text-[var(--void-accent)] hover:text-indigo-400",
+                footerActionText: "text-void-muted",
                 dividerLine: "bg-white/10",
                 dividerText: "text-void-subtle",
-                socialButtonsBlockButton: "border-white/10 text-void-text hover:bg-white/5",
+                socialButtonsBlockButton:
+                  "border-white/10 text-void-text bg-[#14141C] hover:bg-white/5",
+                socialButtonsBlockButtonText: "text-void-text",
+                socialButtonsProviderIcon: "brightness-110",
+                identityPreviewText: "text-void-text",
                 identityPreviewEditButton: "text-[var(--void-accent)]",
               },
             }}
