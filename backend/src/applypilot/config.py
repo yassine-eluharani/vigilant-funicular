@@ -49,7 +49,8 @@ def load_profile(user_id: int | None = None) -> dict:
 
 def load_search_config(user_id: int | None = None) -> dict:
     """Load search config. If user_id is given, reads from users.searches_json in DB."""
-    import yaml, json
+    import yaml
+    import json
     if user_id is not None:
         from applypilot.database import get_connection
         conn = get_connection()

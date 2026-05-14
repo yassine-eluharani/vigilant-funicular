@@ -82,6 +82,15 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
           provenance: true
           sbom: true
+          # Frontend Docker build needs a Clerk publishable key at build time
+          # because NEXT_PUBLIC_* vars are baked into the JS bundle by
+          # `next build`. The dummy is `pk_test_<base64("build-dummy.clerk.accounts.dev$")>`
+          # — syntactically valid (so Clerk doesn't crash during prerender of
+          # /_not-found) but not bound to any real account. The deploy
+          # environment must override NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY at
+          # runtime via env, or rebuild with a real build-arg.
+          build-args: |
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_YnVpbGQtZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3

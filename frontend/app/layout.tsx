@@ -41,7 +41,10 @@ export default function RootLayout({
         // key check doesn't crash `next build` when the real key isn't set
         // (e.g. in CI without secrets, or local docker builds). The key is
         // base64("build-dummy.clerk.accounts.dev$") and is not a real account.
-        process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ??
+        // `||` (not `??`) so empty-string env vars also fall back — Docker
+        // build-args evaluate undefined ARGs to "" rather than leaving them
+        // unset, which slipped past `??` and crashed Clerk in publish.yml.
+        process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
         "pk_test_YnVpbGQtZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA"
       }
     >

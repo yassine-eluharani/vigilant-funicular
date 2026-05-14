@@ -10,7 +10,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Close sidebar on route change
+  // Close sidebar on route change. The setState inside the effect is
+  // intentional: pathname changes are an external event we react to.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setSidebarOpen(false); }, [pathname]);
 
   const showSidebar = !NO_SIDEBAR.some((p) => pathname.startsWith(p));

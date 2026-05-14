@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from jobspy import scrape_jobs
 
 from applypilot import config
-from applypilot.database import get_connection, init_db, is_duplicate, store_jobs
+from applypilot.database import get_connection, init_db, is_duplicate
 
 log = logging.getLogger(__name__)
 

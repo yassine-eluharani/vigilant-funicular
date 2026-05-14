@@ -1,6 +1,5 @@
 """Job fit scoring: LLM-powered evaluation of candidate-job match quality."""
 
-import json
 import logging
 import re
 import time

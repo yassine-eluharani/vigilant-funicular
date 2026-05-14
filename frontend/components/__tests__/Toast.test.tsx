@@ -25,7 +25,7 @@ import { ToastProvider, useToast } from "../ui/Toast";
  * Test harness: a button that calls `toast(...)` when clicked, mounted
  * inside `ToastProvider`. Lets us drive the hook from outside React.
  */
-function _Trigger({ text, ok }: { text: string; ok?: boolean }) {
+function Trigger({ text, ok }: { text: string; ok?: boolean }) {
   const toast = useToast();
   return (
     <button
@@ -51,7 +51,7 @@ describe("Toast", () => {
   test("renders a message when toast() is called", () => {
     render(
       <ToastProvider>
-        <_Trigger text="Hello, world" />
+        <Trigger text="Hello, world" />
       </ToastProvider>,
     );
 
@@ -69,7 +69,7 @@ describe("Toast", () => {
   test("dismisses the message after 3500ms", () => {
     render(
       <ToastProvider>
-        <_Trigger text="Bye, world" />
+        <Trigger text="Bye, world" />
       </ToastProvider>,
     );
 
@@ -89,7 +89,7 @@ describe("Toast", () => {
   test("renders an error-styled banner when ok=false", () => {
     render(
       <ToastProvider>
-        <_Trigger text="Boom" ok={false} />
+        <Trigger text="Boom" ok={false} />
       </ToastProvider>,
     );
 
@@ -108,7 +108,7 @@ describe("Toast", () => {
   test("multiple toasts can stack", () => {
     render(
       <ToastProvider>
-        <_Trigger text="first" />
+        <Trigger text="first" />
       </ToastProvider>,
     );
     const btn = screen.getByTestId("trigger");

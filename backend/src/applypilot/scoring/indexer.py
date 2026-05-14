@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-from datetime import datetime, timezone
 
 from applypilot.database import get_connection
 from applypilot.llm import get_client
@@ -120,7 +119,6 @@ def run_indexing(limit: int = 0) -> dict:
     t0 = time.time()
     indexed = 0
     errors = 0
-    now = datetime.now(timezone.utc).isoformat()
 
     for i, job in enumerate(jobs):
         meta = _extract_metadata(job)

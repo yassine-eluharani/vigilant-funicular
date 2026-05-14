@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 
-from applypilot.config import load_profile, load_search_config, get_resume_text
+from applypilot.config import load_profile
 from applypilot.database import get_connection, upsert_user_job
 from applypilot.scoring.scorer import run_scoring
 
@@ -126,8 +126,6 @@ def _heuristic_score(meta: dict, profile: dict) -> float:
             score += 15
 
     # Visa/location bonus
-    personal = profile.get("personal", {})
-    user_country = personal.get("country", "").lower()
     remote_policy = meta.get("remote_policy", "")
     wa = profile.get("work_authorization", {})
     needs_sponsorship = wa.get("require_sponsorship", False)

@@ -364,14 +364,13 @@ function SectionHeader({ title, hint }: { title: string; hint?: string }) {
 function ResumeTab() {
   const toast = useToast();
   const [text, setText] = useState("");
-  const [exists, setExists] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     getResumeText()
-      .then(({ text, exists }) => { setText(text); setExists(exists); })
+      .then(({ text }) => { setText(text); })
       .finally(() => setLoading(false));
   }, []);
 
@@ -380,7 +379,6 @@ function ResumeTab() {
     try {
       await updateResumeText(text);
       toast("Resume saved");
-      setExists(true);
     } catch {
       toast("Failed to save", false);
     } finally {
@@ -475,7 +473,7 @@ function BillingTab() {
     return <div className="p-6 text-sm text-void-muted">Loading…</div>;
   }
   if (!me) {
-    return <div className="p-6 text-sm text-void-muted">Couldn't load account info.</div>;
+    return <div className="p-6 text-sm text-void-muted">Couldn&apos;t load account info.</div>;
   }
 
   return (
