@@ -7,6 +7,7 @@ import base64
 import collections as _collections
 import json
 import logging
+import os
 import threading
 import time as _time
 import uuid
@@ -303,23 +304,94 @@ def mark_orphan_tasks_on_startup() -> None:
     """Mark any in-flight tasks orphaned by a server restart as errored.
 
     TST-015: when the backend restarts, the in-memory `_tasks` registry is
-    wiped. Any tailor/cover/score that was running at the time is lost — but
-    the user's monthly counter has already been debited, leaving them with no
-    artifact to show for it.
+    wiped. Any tailor/cover/score that was running at the time is lost.
 
     This hook runs at app startup. Right now tasks aren't persisted to the DB,
     so there's nothing to mark — this is a no-op. The hook exists so a future
     change can plug in real persistence (e.g. a `tasks` table with a
     `status='running'` row per in-flight job) without needing to rewire the
     lifespan handler.
-
-    TODO(TST-015): persist tasks to a DB table so this method can flip orphans
-    to `error: "Server restarted before task completed; please retry"` and
-    optionally credit the user's counter back. The frontend already handles
-    "task gone, please retry" gracefully (404 from /api/stream/task/{id}).
     """
     # No-op for now — see docstring.
     log.debug("mark_orphan_tasks_on_startup: no persisted tasks (in-memory only)")
+
+
+# ---------------------------------------------------------------------------
+# Background continuous scoring loop
+# ---------------------------------------------------------------------------
+#
+# For a personal-tool deployment we want scoring + auto-tailor to run on a
+# schedule, not just when the user opens /apply. The discovery worker on the
+# homelab feeds new jobs every 2h; the loop here picks them up shortly after,
+# scores them per-user, and (via the post-score hook in pipeline._run_score)
+# auto-generates tailored CV + cover letters for any fit_score >= 9 job.
+#
+# `trigger_score_for_user` is already idempotent: it skips if a scoring task
+# is already in-flight for that user, and returns None when there's nothing
+# unscored. So the loop can just call it on every tick without coordination.
+
+# Default to 15 min — short enough that newly-discovered jobs surface fast,
+# long enough that we're not hammering the LLM API on idle. Override with
+# AUTO_SCORE_INTERVAL_SECONDS env var.
+_AUTO_SCORE_INTERVAL = int(os.environ.get("AUTO_SCORE_INTERVAL_SECONDS", "900"))
+# Wait this long after startup before the first sweep — gives the rest of
+# the lifespan handler (init_db, cleanup) time to finish without contention.
+_AUTO_SCORE_INITIAL_DELAY = int(os.environ.get("AUTO_SCORE_INITIAL_DELAY_SECONDS", "30"))
+
+
+async def _periodic_score_loop() -> None:
+    """Forever-loop: score every user with unscored jobs, every N seconds.
+
+    Runs on the FastAPI event loop. Each iteration enumerates active users
+    from the DB and calls `trigger_score_for_user` for each. The actual LLM
+    work happens on the background ThreadPoolExecutor inside `_start_task`,
+    so this loop never blocks on the LLM itself.
+    """
+    if _AUTO_SCORE_INTERVAL <= 0:
+        log.info("periodic-score: disabled (AUTO_SCORE_INTERVAL_SECONDS=%s)",
+                 _AUTO_SCORE_INTERVAL)
+        return
+
+    log.info("periodic-score: starting (interval=%ss, first sweep in %ss)",
+             _AUTO_SCORE_INTERVAL, _AUTO_SCORE_INITIAL_DELAY)
+    await asyncio.sleep(_AUTO_SCORE_INITIAL_DELAY)
+
+    while True:
+        try:
+            from applypilot.database import get_connection
+            conn = await asyncio.to_thread(get_connection)
+            user_ids: list[int] = []
+            try:
+                rows = await asyncio.to_thread(
+                    lambda: conn.execute(
+                        "SELECT id FROM users WHERE clerk_id IS NOT NULL"
+                    ).fetchall()
+                )
+                user_ids = [r["id"] if hasattr(r, "keys") else r[0] for r in rows]
+            except Exception:
+                log.exception("periodic-score: failed to enumerate users")
+
+            if user_ids:
+                log.info("periodic-score: tick — %d user(s) to check", len(user_ids))
+                for uid in user_ids:
+                    try:
+                        # Off-loop: trigger_score_for_user does a sync DB
+                        # COUNT then submits to the executor — cheap, but
+                        # offload anyway to keep the event loop responsive.
+                        await asyncio.to_thread(trigger_score_for_user, uid)
+                    except Exception:
+                        log.exception("periodic-score: trigger failed for user_id=%s", uid)
+        except asyncio.CancelledError:
+            log.info("periodic-score: cancelled")
+            raise
+        except Exception:
+            log.exception("periodic-score: unexpected error in loop")
+
+        try:
+            await asyncio.sleep(_AUTO_SCORE_INTERVAL)
+        except asyncio.CancelledError:
+            log.info("periodic-score: cancelled during sleep")
+            raise
 
 
 # ---------------------------------------------------------------------------
