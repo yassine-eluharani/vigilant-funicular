@@ -96,3 +96,10 @@ jobs:
         env:
           CI: "1"
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_YnVpbGQtZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA
+          # `clerkMiddleware()` (frontend/proxy.ts) calls `auth()` for any
+          # protected route — auth() throws if CLERK_SECRET_KEY is unset, so
+          # the dev server appears to start but every /apply hit 500s and
+          # the webServer wait times out. Inject a syntactically valid dummy
+          # so the middleware initialises; it'll still 401 because there's
+          # no real Clerk session, which is what the redirect test asserts.
+          CLERK_SECRET_KEY: sk_test_ZHVtbXktY2ktY2xlcmstc2VjcmV0LWtleS1ub3QtcmVhbA
