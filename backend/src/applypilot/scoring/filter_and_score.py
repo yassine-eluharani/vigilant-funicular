@@ -47,8 +47,20 @@ def _passes_rules(meta: dict, profile: dict) -> tuple[bool, str]:
 
     needs_sponsorship = wa.get("require_sponsorship", False)
     user_country = personal.get("country", "").lower()
+    # `target_countries` lets a user signal countries they're willing to
+    # relocate to (or already work remotely for). Pre-filter accepts a job
+    # if its location_country matches user_country OR any target country.
+    # No-op when missing (back-compat with profiles set via /setup that
+    # only have a single `country` field).
+    target_countries = [c.lower() for c in personal.get("target_countries", []) if isinstance(c, str)]
+    acceptable_countries = ([user_country] if user_country else []) + target_countries
     user_years = exp.get("years_of_experience", 0) or 0
     target_seniority = [s.lower() for s in exp.get("target_seniority", [])]
+
+    def _country_matches(job_country: str) -> bool:
+        if not job_country or not acceptable_countries:
+            return True  # no info on either side → don't reject
+        return any(job_country in c or c in job_country for c in acceptable_countries)
 
     # Visa check
     visa_offered = meta.get("visa_sponsorship")
@@ -62,13 +74,17 @@ def _passes_rules(meta: dict, profile: dict) -> tuple[bool, str]:
     if remote_policy == "worldwide":
         pass  # always accessible
     elif remote_policy == "us_only":
-        if user_country and user_country not in ("us", "usa", "united states"):
+        # Only accept us_only jobs if the US is one of the user's
+        # acceptable countries (rare for this app; keep the check simple).
+        if acceptable_countries and not any(
+            c in ("us", "usa", "united states") for c in acceptable_countries
+        ):
             return False, "us_only_remote"
     elif remote_policy == "country_specific":
-        if location_country and user_country and location_country not in user_country and user_country not in location_country:
+        if not _country_matches(location_country):
             return False, "country_specific_remote"
     elif remote_policy == "onsite":
-        if location_country and user_country and location_country not in user_country and user_country not in location_country:
+        if not _country_matches(location_country):
             return False, "onsite_wrong_country"
 
     # Experience gap. Skip the check entirely when the user hasn't filled
