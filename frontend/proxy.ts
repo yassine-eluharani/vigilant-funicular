@@ -2,8 +2,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
 const isPublic = createRouteMatcher([
-  "/",
-  "/pricing(.*)",
+  "/",                  // bounces to /apply via app/page.tsx
   "/login(.*)",
   "/register(.*)",
   "/api/webhooks/(.*)",
