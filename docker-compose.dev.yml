@@ -35,6 +35,10 @@ services:
     volumes:
       - ./frontend:/app           # Hot reload: mount source
       - /app/node_modules         # Keep container node_modules separate from host
+      - /app/.next                # Same for .next: a host-side `npm run build`
+                                  # leaves a production manifest behind that
+                                  # confuses the container's `next dev` and
+                                  # makes new pages 404 until cleared.
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - NODE_ENV=development
