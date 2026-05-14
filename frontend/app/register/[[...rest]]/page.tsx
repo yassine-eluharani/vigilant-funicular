@@ -58,39 +58,80 @@ export default function RegisterPage() {
             forceRedirectUrl="/setup"
             signInUrl="/login"
             appearance={{
-              // baseTheme: dark — see comment in /login for why this is
-              // required to repaint Clerk's internal labels (social-button
-              // text, error states, etc.) that the variables block alone
-              // doesn't reach.
+              // Object-style elements — see /login for the why. Tailwind
+              // class strings lost the specificity war against Clerk's
+              // internal styles, leaving OAuth labels invisible.
               baseTheme: dark,
               variables: {
                 colorPrimary: "#7C7CF5",
                 colorBackground: "#0A0A0F",
                 colorInputBackground: "#14141C",
-                colorText: "#E2E8F0",
-                colorTextSecondary: "#9CA3AF",
-                colorInputText: "#E2E8F0",
+                colorText: "#F1F5F9",
+                colorTextSecondary: "#94A3B8",
+                colorInputText: "#F1F5F9",
                 colorNeutral: "#1E1E2A",
                 colorDanger: "#EF4444",
+                colorTextOnPrimaryBackground: "#FFFFFF",
                 borderRadius: "0.5rem",
                 fontFamily: "var(--font-sans), sans-serif",
+                fontSize: "0.95rem",
               },
               elements: {
-                card: "shadow-none border border-white/[0.06] bg-[#0A0A0F]",
-                headerTitle: "text-void-text",
-                headerSubtitle: "text-void-muted",
-                formButtonPrimary: "bg-void-accent hover:bg-indigo-500 text-white text-sm",
-                formFieldInput: "bg-[#14141C] border-white/10 text-void-text",
-                formFieldLabel: "text-void-text",
-                footerActionLink: "text-void-accent hover:text-indigo-400",
-                footerActionText: "text-void-muted",
-                dividerLine: "bg-white/10",
-                dividerText: "text-void-subtle",
-                socialButtonsBlockButton:
-                  "border-white/10 text-void-text bg-[#14141C] hover:bg-white/5",
-                socialButtonsBlockButtonText: "text-void-text",
-                socialButtonsProviderIcon: "brightness-110",
-                identityPreviewText: "text-void-text",
+                rootBox: { width: "100%" },
+                card: {
+                  backgroundColor: "#0A0A0F",
+                  border: "1px solid rgba(255,255,255,0.06)",
+                  boxShadow: "none",
+                },
+                headerTitle: { color: "#F1F5F9", fontWeight: 600 },
+                headerSubtitle: { color: "#94A3B8" },
+                formButtonPrimary: {
+                  backgroundColor: "#7C7CF5",
+                  color: "#FFFFFF",
+                  fontWeight: 600,
+                  textShadow: "none",
+                  boxShadow: "none",
+                  "&:hover": { backgroundColor: "#9494FF" },
+                  "&:focus": { boxShadow: "0 0 0 3px rgba(124,124,245,0.35)" },
+                },
+                formFieldLabel: { color: "#F1F5F9", fontWeight: 500 },
+                formFieldInput: {
+                  backgroundColor: "#14141C",
+                  borderColor: "rgba(255,255,255,0.10)",
+                  color: "#F1F5F9",
+                  "&::placeholder": { color: "#6B7280" },
+                  "&:focus": {
+                    borderColor: "#7C7CF5",
+                    boxShadow: "0 0 0 3px rgba(124,124,245,0.18)",
+                  },
+                },
+                socialButtonsBlockButton: {
+                  backgroundColor: "#14141C",
+                  border: "1px solid rgba(255,255,255,0.10)",
+                  color: "#F1F5F9",
+                  "&:hover": { backgroundColor: "#1A1A24" },
+                },
+                socialButtonsBlockButtonText: {
+                  color: "#F1F5F9",
+                  fontWeight: 500,
+                },
+                socialButtonsBlockButtonArrow: { color: "#94A3B8" },
+                socialButtonsProviderIcon: { filter: "brightness(1.15)" },
+                dividerLine: { backgroundColor: "rgba(255,255,255,0.10)" },
+                dividerText: { color: "#6B7280" },
+                footerActionText: { color: "#94A3B8" },
+                footerActionLink: {
+                  color: "#9494FF",
+                  fontWeight: 500,
+                  "&:hover": { color: "#B5B5FF" },
+                },
+                identityPreview: {
+                  backgroundColor: "#14141C",
+                  border: "1px solid rgba(255,255,255,0.10)",
+                },
+                identityPreviewText: { color: "#F1F5F9" },
+                footer: { backgroundColor: "transparent" },
+                badge: { color: "#94A3B8" },
               },
             }}
           />
