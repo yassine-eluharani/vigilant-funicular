@@ -113,24 +113,14 @@ export const coverJob = (encodedUrl: string, validation_mode = "normal") =>
 export const favoriteJob = (encodedUrl: string) =>
   req<{ favorited: boolean }>(`/api/jobs/${encodedUrl}/favorite`, { method: "POST" });
 
-// ── Pipeline ──────────────────────────────────────────────────────────────────
-
-export interface PipelineRunOptions {
-  stages: string[];
-  min_score?: number;
-  workers?: number;
-  validation?: string;
-  stream?: boolean;
-}
-
-export const runPipeline = (opts: PipelineRunOptions): Promise<{ task_id: string; skipped?: boolean }> =>
-  req("/api/pipeline/run", { method: "POST", body: JSON.stringify(opts) });
+// ── Background tasks ──────────────────────────────────────────────────────────
+// Scoring + auto-tailor are owned by the discovery worker (separate repo);
+// no in-process pipeline trigger here. Only the on-demand tailor / cover
+// endpoints push to this task registry, so /api/tasks/{id} is the only
+// endpoint we still poll.
 
 export const getTask = (taskId: string, since = 0): Promise<Task> =>
   req(`/api/tasks/${taskId}?since=${since}`);
-
-export const maybeScore = (): Promise<{ started: boolean; task_id?: string; reason?: string }> =>
-  req("/api/pipeline/maybe-score", { method: "POST" });
 
 // ── Config ────────────────────────────────────────────────────────────────────
 

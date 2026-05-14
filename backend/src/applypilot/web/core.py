@@ -7,7 +7,6 @@ import base64
 import collections as _collections
 import json
 import logging
-import os
 import threading
 import time as _time
 import uuid
@@ -227,72 +226,9 @@ class RateLimiter:
 # Shared limiters — applied to expensive LLM endpoints
 tailor_limiter = RateLimiter(max_calls=5, window_seconds=60)
 cover_limiter  = RateLimiter(max_calls=5, window_seconds=60)
-score_limiter  = RateLimiter(max_calls=3, window_seconds=60)
 # Parse-CV is heavier than a tailor (large free-form text + JSON-mode LLM
 # call), so use a tighter sliding window: 3 parses per 5 minutes per user.
 parse_limiter  = RateLimiter(max_calls=3, window_seconds=300)
-
-
-# ---------------------------------------------------------------------------
-# Auto-scoring helper
-# ---------------------------------------------------------------------------
-#
-# BE-008: per-user score-task pointer was a plain dict; replaced with a TTLCache
-# that bounds memory and naturally forgets stale pointers after an hour.
-# BE-006: existing-task lookup + _start_task + assignment now happens under a
-# single lock so two concurrent /api/pipeline/maybe-score calls can't both
-# pass the existence check and start duplicate jobs.
-
-_score_task_by_user: TTLCache[int, str] = TTLCache(maxsize=10_000, ttl=3600)
-_score_task_lock = threading.Lock()
-
-
-def trigger_score_for_user(user_id: int) -> str | None:
-    """Start a background scoring task for this user if one isn't already running.
-
-    Returns the task_id if started (or already running), None if no unscored
-    jobs exist for this user.
-    """
-    # BE-006: hold the lock across the existence check + _start_task + dict
-    # assignment so concurrent callers see a consistent view.
-    with _score_task_lock:
-        existing_id = _score_task_by_user.get(user_id)
-        if existing_id:
-            existing = _tasks.get(existing_id)
-            if existing and existing.get("status") in ("pending", "running"):
-                return existing_id
-
-        # Check if the user has unscored jobs (filtered but not yet scored for them).
-        # DB read is inside the lock — that's a brief synchronous query, and
-        # serializing it across concurrent maybe-score calls for the same user
-        # is the whole point of BE-006.
-        from applypilot.database import get_connection
-        conn = get_connection()
-        unscored = conn.execute(
-            "SELECT COUNT(*) FROM jobs j "
-            "WHERE j.full_description IS NOT NULL "
-            "AND NOT EXISTS ("
-            "  SELECT 1 FROM user_jobs uj "
-            "  WHERE uj.job_url = j.url AND uj.user_id = ? AND uj.fit_score IS NOT NULL"
-            ")",
-            (user_id,),
-        ).fetchone()[0]
-
-        log.info("trigger_score_for_user: user_id=%s unscored=%s (type=%s)",
-                 user_id, unscored, type(unscored).__name__)
-        if not unscored:
-            return None
-
-        def _score() -> dict:
-            from applypilot.pipeline import run_pipeline
-            return run_pipeline(stages=["score"], user_id=user_id)
-
-        task_id = _start_task(_score)
-        _score_task_by_user[user_id] = task_id
-
-    log.info("Auto-scoring started for user %d (%d unscored jobs) → task %s",
-             user_id, unscored, task_id)
-    return task_id
 
 
 # ---------------------------------------------------------------------------
@@ -316,82 +252,11 @@ def mark_orphan_tasks_on_startup() -> None:
     log.debug("mark_orphan_tasks_on_startup: no persisted tasks (in-memory only)")
 
 
-# ---------------------------------------------------------------------------
-# Background continuous scoring loop
-# ---------------------------------------------------------------------------
-#
-# For a personal-tool deployment we want scoring + auto-tailor to run on a
-# schedule, not just when the user opens /apply. The discovery worker on the
-# homelab feeds new jobs every 2h; the loop here picks them up shortly after,
-# scores them per-user, and (via the post-score hook in pipeline._run_score)
-# auto-generates tailored CV + cover letters for any fit_score >= 9 job.
-#
-# `trigger_score_for_user` is already idempotent: it skips if a scoring task
-# is already in-flight for that user, and returns None when there's nothing
-# unscored. So the loop can just call it on every tick without coordination.
-
-# Default to 15 min — short enough that newly-discovered jobs surface fast,
-# long enough that we're not hammering the LLM API on idle. Override with
-# AUTO_SCORE_INTERVAL_SECONDS env var.
-_AUTO_SCORE_INTERVAL = int(os.environ.get("AUTO_SCORE_INTERVAL_SECONDS", "900"))
-# Wait this long after startup before the first sweep — gives the rest of
-# the lifespan handler (init_db, cleanup) time to finish without contention.
-_AUTO_SCORE_INITIAL_DELAY = int(os.environ.get("AUTO_SCORE_INITIAL_DELAY_SECONDS", "30"))
-
-
-async def _periodic_score_loop() -> None:
-    """Forever-loop: score every user with unscored jobs, every N seconds.
-
-    Runs on the FastAPI event loop. Each iteration enumerates active users
-    from the DB and calls `trigger_score_for_user` for each. The actual LLM
-    work happens on the background ThreadPoolExecutor inside `_start_task`,
-    so this loop never blocks on the LLM itself.
-    """
-    if _AUTO_SCORE_INTERVAL <= 0:
-        log.info("periodic-score: disabled (AUTO_SCORE_INTERVAL_SECONDS=%s)",
-                 _AUTO_SCORE_INTERVAL)
-        return
-
-    log.info("periodic-score: starting (interval=%ss, first sweep in %ss)",
-             _AUTO_SCORE_INTERVAL, _AUTO_SCORE_INITIAL_DELAY)
-    await asyncio.sleep(_AUTO_SCORE_INITIAL_DELAY)
-
-    while True:
-        try:
-            from applypilot.database import get_connection
-            conn = await asyncio.to_thread(get_connection)
-            user_ids: list[int] = []
-            try:
-                rows = await asyncio.to_thread(
-                    lambda: conn.execute(
-                        "SELECT id FROM users WHERE clerk_id IS NOT NULL"
-                    ).fetchall()
-                )
-                user_ids = [r["id"] if hasattr(r, "keys") else r[0] for r in rows]
-            except Exception:
-                log.exception("periodic-score: failed to enumerate users")
-
-            if user_ids:
-                log.info("periodic-score: tick — %d user(s) to check", len(user_ids))
-                for uid in user_ids:
-                    try:
-                        # Off-loop: trigger_score_for_user does a sync DB
-                        # COUNT then submits to the executor — cheap, but
-                        # offload anyway to keep the event loop responsive.
-                        await asyncio.to_thread(trigger_score_for_user, uid)
-                    except Exception:
-                        log.exception("periodic-score: trigger failed for user_id=%s", uid)
-        except asyncio.CancelledError:
-            log.info("periodic-score: cancelled")
-            raise
-        except Exception:
-            log.exception("periodic-score: unexpected error in loop")
-
-        try:
-            await asyncio.sleep(_AUTO_SCORE_INTERVAL)
-        except asyncio.CancelledError:
-            log.info("periodic-score: cancelled during sleep")
-            raise
+# Scoring + auto-tailor moved to the discovery worker
+# (applypilot-discovery/worker.py). Backend's only role today is the
+# on-demand `tailor` and `cover-letter` endpoints (jobs router) for
+# manual generation on lower-scored jobs. There is no in-process
+# scoring or pipeline orchestration here anymore.
 
 
 # ---------------------------------------------------------------------------

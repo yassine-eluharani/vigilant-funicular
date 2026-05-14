@@ -6,7 +6,7 @@ import { JobFilters, type Filters } from "@/components/jobs/JobFilters";
 import { JobDetailDrawer } from "@/components/jobs/JobDetailDrawer";
 import { useJobs } from "@/lib/hooks/useJobs";
 import { useStats } from "@/lib/hooks/useStats";
-import { dismissJob, markApplied, getMe, getSchedulerStatus, maybeScore } from "@/lib/api";
+import { dismissJob, markApplied, getMe, getSchedulerStatus } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import type { Job, UserInfo } from "@/lib/types";
 
@@ -96,7 +96,6 @@ function JobsPanel() {
     getSchedulerStatus()
       .then((info) => { if (!cancelled) setSyncInfo(info); })
       .catch(() => null);
-    maybeScore().catch(() => null);
     return () => { cancelled = true; };
   }, []);
 

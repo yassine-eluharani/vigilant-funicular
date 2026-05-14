@@ -8,7 +8,6 @@ import {
   getJob,
   dismissJob,
   markApplied,
-  maybeScore,
   downloadResume,
   downloadCover,
   getMe,
@@ -275,9 +274,8 @@ function ApplyPanel() {
     let cancelled = false;
     getMe().then((u) => { if (!cancelled) setMe(u); }).catch(() => null);
     refresh();
-    // Kick scoring in case there are unscored jobs — auto-tailor + cover will
-    // fire for any newly-scored 9–10 inside the same backend pipeline run.
-    maybeScore().catch(() => null);
+    // Scoring + auto-tailor are owned by the discovery worker (runs every
+    // 2h on the homelab), so there's no client-side trigger to fire here.
     return () => { cancelled = true; };
   }, [refresh]);
 

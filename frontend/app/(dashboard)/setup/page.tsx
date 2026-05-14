@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   getResumeText,
   getTask,
-  maybeScore,
   parseResumeCv,
   updateProfile,
   updateResumeText,
@@ -969,9 +968,8 @@ export default function SetupPage() {
         defaults: { results_per_site: 100, hours_old: hoursOld },
       });
 
-      // Kick off scoring immediately — profile + resume are now saved
-      maybeScore().catch(() => null);
-
+      // Discovery worker re-scores on its own cycle (every 2h on the
+      // homelab); profile/resume changes show up there.
       router.replace("/apply");
     } catch (e) {
       console.error(e);

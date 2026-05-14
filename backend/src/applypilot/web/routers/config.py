@@ -23,7 +23,7 @@ from typing import Any
 from applypilot.config import APP_DIR, PROFILE_PATH, SEARCH_CONFIG_PATH
 from applypilot.database import get_connection
 from applypilot.web.auth import get_current_user
-from applypilot.web.core import _start_task, parse_limiter, trigger_score_for_user
+from applypilot.web.core import _start_task, parse_limiter
 from applypilot.web.schemas import (
     EnvConfigResponse,
     NotificationsResponse,
@@ -79,8 +79,9 @@ def update_profile(
         (json.dumps(data, ensure_ascii=False), user["id"]),
     )
     conn.commit()
-    task_id = trigger_score_for_user(user["id"])
-    return ProfileUpdateResponse(ok=True, scoring_task_id=task_id)
+    # Discovery worker re-scores on its own cycle (every 2h); no in-process
+    # scoring trigger needed since profile changes take effect on next sweep.
+    return ProfileUpdateResponse(ok=True, scoring_task_id=None)
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +198,8 @@ def update_resume_text(
         (body.text, user["id"]),
     )
     conn.commit()
-    task_id = trigger_score_for_user(user["id"])
-    return ResumeUpdateResponse(ok=True, scoring_task_id=task_id)
+    # Discovery worker re-scores on its own cycle.
+    return ResumeUpdateResponse(ok=True, scoring_task_id=None)
 
 
 def _persist_uploaded_pdf(dest: Path, content: bytes) -> None:

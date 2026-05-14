@@ -72,15 +72,6 @@ export async function installApiStubs(page: Page): Promise<void> {
     }),
   );
 
-  // Maybe-score (auto-trigger on /jobs mount)
-  await page.route("**/api/pipeline/maybe-score", (route: Route) =>
-    route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ started: false, reason: "test-mode" }),
-    }),
-  );
-
   // Scheduler status
   await page.route("**/api/scheduler/status", (route: Route) =>
     route.fulfill({

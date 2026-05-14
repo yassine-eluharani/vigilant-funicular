@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 # ---------------------------------------------------------------------------
@@ -172,34 +172,6 @@ class StatusMutationResponse(_ResponseModel):
     """Generic shape for mark-applied / dismiss / restore / mark-status."""
     ok: bool
     status: str
-
-
-# === pipeline ===============================================================
-
-
-class PipelineRunRequest(_RequestModel):
-    """POST /api/pipeline/run — explicit pipeline kickoff (score-only today)."""
-    stages: list[str] = Field(default_factory=lambda: ["score"])
-    workers: int = 1
-    stream: bool = False
-    # Forward-compat: the frontend may send these but the route ignores them
-    # for now. Declaring them keeps validation friendly.
-    min_score: Optional[int] = None
-    validation: Optional[str] = None
-
-
-class PipelineRunResponse(_ResponseModel):
-    """POST /api/pipeline/run — task_id is null when nothing to do."""
-    task_id: Optional[str] = None
-    skipped: Optional[bool] = None
-    reason: Optional[str] = None
-
-
-class MaybeScoreResponse(_ResponseModel):
-    """POST /api/pipeline/maybe-score — idempotent auto-score trigger."""
-    started: bool
-    task_id: Optional[str] = None
-    reason: Optional[str] = None
 
 
 class TaskStatusResponse(_ResponseModel):

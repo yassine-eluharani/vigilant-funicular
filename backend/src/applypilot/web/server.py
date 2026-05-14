@@ -64,24 +64,12 @@ def _parse_cors_origins(raw: str) -> list[str]:
 @asynccontextmanager
 async def lifespan(_app):
     from applypilot.database import init_db, cleanup_old_jobs, cleanup_closed_jobs
-    from applypilot.web.core import mark_orphan_tasks_on_startup, _periodic_score_loop
+    from applypilot.web.core import mark_orphan_tasks_on_startup
     await asyncio.to_thread(init_db)
     await asyncio.to_thread(cleanup_old_jobs, 3)
     await asyncio.to_thread(cleanup_closed_jobs, 7)
     mark_orphan_tasks_on_startup()  # TST-015: flag in-flight tasks lost to restart
-
-    # Continuous scoring + auto-tailor — picks up newly-discovered jobs
-    # without needing the user to open /apply. Runs forever, cancelled when
-    # FastAPI shuts down. Tunable via AUTO_SCORE_INTERVAL_SECONDS.
-    score_task = asyncio.create_task(_periodic_score_loop())
-    try:
-        yield
-    finally:
-        score_task.cancel()
-        try:
-            await score_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    yield
 
 app = FastAPI(
     title="ApplyPilot API",
