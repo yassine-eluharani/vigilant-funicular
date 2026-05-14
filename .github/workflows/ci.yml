@@ -70,7 +70,7 @@ jobs:
 
       - name: Build
         env:
-          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_placeholder_for_ci_build
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_YnVpbGQtZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA
           BACKEND_URL: http://backend:8000
         run: npm run build
 
@@ -88,4 +88,4 @@ jobs:
         run: npx playwright test
         env:
           CI: "1"
-          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_placeholder_for_ci_build
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_test_YnVpbGQtZHVtbXkuY2xlcmsuYWNjb3VudHMuZGV2JA
