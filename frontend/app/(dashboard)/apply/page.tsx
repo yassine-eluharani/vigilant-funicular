@@ -239,9 +239,12 @@ function ApplyPanel() {
     setReadyLoading(true);
     setCandidatesLoading(true);
     try {
+      // Top section threshold matches the discovery worker's
+      // AUTO_TAILOR_MIN_SCORE (default 8). Anything ≥ 8 gets auto-docs;
+      // 9-10 still float to the top via fit_score DESC ordering.
       const [topResp, midResp] = await Promise.all([
-        getJobs({ min_score: 9, max_score: 10, status: "scored", limit: READY_LIMIT }),
-        getJobs({ min_score: 7, max_score: 8, status: "scored", limit: CANDIDATES_LIMIT }),
+        getJobs({ min_score: 8, max_score: 10, status: "scored", limit: READY_LIMIT }),
+        getJobs({ min_score: 7, max_score: 7, status: "scored", limit: CANDIDATES_LIMIT }),
       ]);
 
       // Split top into "ready" (has both docs) vs "still generating".
@@ -313,7 +316,7 @@ function ApplyPanel() {
             Ready to apply
           </h1>
           <p className="text-sm text-void-muted mt-2">
-            High-fit jobs (9–10) with a tailored CV and cover letter waiting for you.
+            High-fit jobs (8+) with a tailored CV and cover letter waiting for you.
           </p>
         </header>
 
@@ -374,7 +377,7 @@ function ApplyPanel() {
               More candidates
             </span>
             <span className="text-xs text-void-subtle">
-              7–8 score · {candidatesLoading ? "loading…" : `${candidates.length} job${candidates.length === 1 ? "" : "s"}`}
+              7 score · {candidatesLoading ? "loading…" : `${candidates.length} job${candidates.length === 1 ? "" : "s"}`}
             </span>
           </button>
 
@@ -383,7 +386,7 @@ function ApplyPanel() {
               {candidatesLoading ? (
                 <p className="text-sm text-void-subtle">Loading…</p>
               ) : candidates.length === 0 ? (
-                <p className="text-sm text-void-subtle">Nothing in the 7–8 range right now.</p>
+                <p className="text-sm text-void-subtle">Nothing scoring 7 right now.</p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                   {candidates.map((job) => (
@@ -421,7 +424,7 @@ function EmptyReady({ pendingHigh }: { pendingHigh: number }) {
       <p className="text-sm text-void-muted max-w-md mx-auto">
         {pendingHigh > 0
           ? `${pendingHigh} high-fit job${pendingHigh > 1 ? "s are" : " is"} being prepared. Tailored CV + cover letter generation runs in the background.`
-          : "No 9–10 scored jobs with documents yet. Scoring runs in the background as the discovery worker finds new postings — check back shortly or browse the archive."}
+          : "No 8+ scored jobs with documents yet. Scoring runs in the background as the discovery worker finds new postings — check back shortly or browse the archive."}
       </p>
       <a
         href="/jobs"
