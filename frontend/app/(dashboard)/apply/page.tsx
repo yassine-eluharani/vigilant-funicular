@@ -261,7 +261,6 @@ function ReadyCard({
               href={applyHref}
               target="_blank"
               rel="noopener noreferrer"
-              onClick={() => onMarkApplied(job)}
               className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
             >
               Open & apply manually
@@ -269,14 +268,17 @@ function ReadyCard({
           </>
         )}
 
-        {/* manual_only OR null (initial / no auto-apply) — original UX */}
+        {/* manual_only OR null (initial / no auto-apply) — original UX.
+            "Apply on company site" only opens the URL — it does NOT mark
+            the job applied (used to, which created false-positive
+            "applied" rows when the user clicked to peek at a posting).
+            "Mark applied" stays as a separate explicit confirmation. */}
         {(status === null || status === undefined || status === "manual_only") && (
           <>
             <a
               href={applyHref}
               target="_blank"
               rel="noopener noreferrer"
-              onClick={() => onMarkApplied(job)}
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover transition-colors"
             >
               Apply on company site
