@@ -626,9 +626,12 @@ _USER_JOBS_COLUMNS: dict[str, str] = {
     "applied_at": "TEXT",
     "apply_error": "TEXT",
     "apply_attempts": "INTEGER DEFAULT 0",
-    # Auto-apply: full-page screenshot of the prepared form (or success page).
-    # Set by the discovery worker's apply_handlers/* — see plan/auto-apply.
+    # Auto-apply telemetry — set by the discovery worker's
+    # apply_handlers/* via apply_runner._persist. Screenshot is a data:
+    # URL (PNG base64) capped at APPLY_SCREENSHOT_MAX_BYTES.
     "apply_screenshot_url": "TEXT",
+    "last_attempted_at":    "TEXT",
+    "apply_duration_ms":    "INTEGER",
     "favorited": "INTEGER DEFAULT 0",
     "dismissed_at": "TEXT",
     "notes": "TEXT",
