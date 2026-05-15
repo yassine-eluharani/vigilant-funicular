@@ -514,8 +514,7 @@ function ApplyPanel() {
             Ready to apply
           </h1>
           <p className="text-sm text-void-muted mt-2">
-            High-fit jobs (8+) with a tailored CV and cover letter ready.
-            Auto-apply candidates surface separately for one-click approval.
+            High-fit jobs (8+) with a tailored CV and cover letter waiting for you.
           </p>
         </header>
 
@@ -533,7 +532,7 @@ function ApplyPanel() {
           </div>
         )}
 
-        {/* Bucket readyJobs into auto-apply (worker-touched) vs. manual */}
+        {/* Ready section */}
         {readyLoading ? (
           <div className="space-y-5">
             {Array.from({ length: 2 }).map((_, i) => <ReadySkeleton key={i} />)}
@@ -541,99 +540,23 @@ function ApplyPanel() {
         ) : readyJobs.length === 0 ? (
           <EmptyReady pendingHigh={pendingHigh} />
         ) : (
-          (() => {
-            // Sort order inside the auto-apply bucket:
-            //   ready_to_submit (your action) → submitting/preparing (in
-            //   flight) → failed (your action) → applied (history). Stable
-            //   on fit_score within each tier.
-            const STATE_RANK: Record<string, number> = {
-              ready_to_submit: 0,
-              submitting: 1,
-              preparing: 1,
-              failed: 2,
-              applied: 3,
-            };
-            const isAuto = (s: string | null | undefined) =>
-              s != null && s !== "manual_only" && s in STATE_RANK;
-
-            const autoJobs = readyJobs
-              .filter((j) => isAuto(j.apply_status))
-              .sort((a, b) => {
-                const ra = STATE_RANK[a.apply_status as string] ?? 99;
-                const rb = STATE_RANK[b.apply_status as string] ?? 99;
-                if (ra !== rb) return ra - rb;
-                return (b.fit_score ?? 0) - (a.fit_score ?? 0);
-              });
-            const manualJobs = readyJobs.filter((j) => !isAuto(j.apply_status));
-
-            const awaitingCount = autoJobs.filter((j) => j.apply_status === "ready_to_submit").length;
-            const inFlightCount = autoJobs.filter(
-              (j) => j.apply_status === "submitting" || j.apply_status === "preparing",
-            ).length;
-            const failedCount = autoJobs.filter((j) => j.apply_status === "failed").length;
-            const appliedCount = autoJobs.filter((j) => j.apply_status === "applied").length;
-
-            return (
-              <>
-                {autoJobs.length > 0 && (
-                  <section className="mb-10">
-                    <header className="flex items-baseline gap-3 mb-4">
-                      <h2 className="font-display text-lg text-void-text">Auto-apply</h2>
-                      <span className="text-xs text-void-subtle">
-                        {[
-                          awaitingCount && `${awaitingCount} awaiting approval`,
-                          inFlightCount && `${inFlightCount} in flight`,
-                          failedCount    && `${failedCount} failed`,
-                          appliedCount   && `${appliedCount} submitted`,
-                        ].filter(Boolean).join(" · ")}
-                      </span>
-                    </header>
-                    <div className="space-y-5">
-                      {autoJobs.map((job) => (
-                        <ReadyCard
-                          key={job.url}
-                          job={job}
-                          onOpen={(j) => setSelectedUrl(j.url_encoded)}
-                          onMarkApplied={handleMarkApplied}
-                          onDismiss={handleDismiss}
-                          onRefresh={refresh}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {manualJobs.length > 0 && (
-                  <section>
-                    <header className="flex items-baseline gap-3 mb-4">
-                      <h2 className="font-display text-lg text-void-text">Manual apply</h2>
-                      <span className="text-xs text-void-subtle">
-                        {manualJobs.length} job{manualJobs.length === 1 ? "" : "s"} · platforms without an auto-apply handler
-                      </span>
-                    </header>
-                    <div className="space-y-5">
-                      {manualJobs.map((job) => (
-                        <ReadyCard
-                          key={job.url}
-                          job={job}
-                          onOpen={(j) => setSelectedUrl(j.url_encoded)}
-                          onMarkApplied={handleMarkApplied}
-                          onDismiss={handleDismiss}
-                          onRefresh={refresh}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {pendingHigh > 0 && (
-                  <p className="text-xs text-void-subtle text-center pt-4">
-                    {pendingHigh} more high-fit job{pendingHigh > 1 ? "s" : ""} still being prepared…
-                  </p>
-                )}
-              </>
-            );
-          })()
+          <div className="space-y-5">
+            {readyJobs.map((job) => (
+              <ReadyCard
+                key={job.url}
+                job={job}
+                onOpen={(j) => setSelectedUrl(j.url_encoded)}
+                onMarkApplied={handleMarkApplied}
+                onDismiss={handleDismiss}
+                onRefresh={refresh}
+              />
+            ))}
+            {pendingHigh > 0 && (
+              <p className="text-xs text-void-subtle text-center pt-2">
+                {pendingHigh} more high-fit job{pendingHigh > 1 ? "s" : ""} still being prepared…
+              </p>
+            )}
+          </div>
         )}
 
         {/* Candidates section */}
