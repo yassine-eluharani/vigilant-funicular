@@ -190,11 +190,25 @@ def build_html(resume: dict) -> str:
             items += f'<div class="entry"><div class="entry-title">{e["title"]}</div>{subtitle}<ul>{bullets}</ul></div>'
         proj_html = f'<div class="section"><div class="section-title">Projects</div>{items}</div>'
 
-    # Education
+    # Education — same shape as experience/projects so degrees + certs
+    # render with proper headers/subtitles/bullets. Falls back gracefully
+    # if a single-line legacy entry was emitted.
     edu_html = ""
     if "EDUCATION" in sections:
-        edu_text = sections["EDUCATION"].strip()
-        edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
+        entries = parse_entries(sections["EDUCATION"])
+        if entries:
+            items = ""
+            for e in entries:
+                bullets = "".join(f"<li>{b}</li>" for b in e["bullets"])
+                subtitle = f'<div class="entry-subtitle">{e["subtitle"]}</div>' if e["subtitle"] else ""
+                bullets_html = f"<ul>{bullets}</ul>" if bullets else ""
+                items += f'<div class="entry"><div class="entry-title">{e["title"]}</div>{subtitle}{bullets_html}</div>'
+            edu_html = f'<div class="section"><div class="section-title">Education</div>{items}</div>'
+        else:
+            # Legacy plain-text education (single-line schema)
+            edu_text = sections["EDUCATION"].strip()
+            if edu_text:
+                edu_html = f'<div class="section"><div class="section-title">Education</div><div class="edu">{edu_text}</div></div>'
 
     # Summary
     summary_html = ""
