@@ -78,8 +78,15 @@ class JobItem(_ResponseModel):
     score_reasoning: Optional[str] = None
     tailored_resume_path: Optional[str] = None
     cover_letter_path: Optional[str] = None
+    # apply_status accepts the user-driven values (applied/dismissed/...)
+    # PLUS the auto-apply machine states (preparing, ready_to_submit,
+    # submitting, failed, manual_only). Kept as free-form string so a new
+    # worker-emitted state doesn't have to land schema changes synchronously.
     apply_status: Optional[str] = None
     applied_at: Optional[str] = None
+    apply_error: Optional[str] = None
+    apply_attempts: Optional[int] = None
+    apply_screenshot_url: Optional[str] = None
     application_url: Optional[str] = None
     discovered_at: Optional[str] = None
     tailored_at: Optional[str] = None

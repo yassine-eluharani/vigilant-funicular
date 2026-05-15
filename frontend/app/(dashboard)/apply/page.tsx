@@ -11,6 +11,9 @@ import {
   downloadResume,
   downloadCover,
   getMe,
+  submitPreparedApply,
+  cancelPreparedApply,
+  retryApply,
 } from "@/lib/api";
 import { ScoreBadge } from "@/components/jobs/ScoreBadge";
 import { useToast } from "@/components/ui/Toast";
@@ -30,16 +33,19 @@ function ReadyCard({
   onOpen,
   onMarkApplied,
   onDismiss,
+  onRefresh,
 }: {
   job: ReadyJob;
   onOpen: (job: Job) => void;
   onMarkApplied: (job: Job) => void;
   onDismiss: (job: Job) => void;
+  onRefresh: () => void;
 }) {
   const toast = useToast();
-  const [busy, setBusy] = useState<"applied" | "dismiss" | null>(null);
+  const [busy, setBusy] = useState<"applied" | "dismiss" | "submit" | "cancel" | "retry" | null>(null);
   const [resumeExpanded, setResumeExpanded] = useState(false);
   const [coverExpanded, setCoverExpanded] = useState(false);
+  const [screenshotOpen, setScreenshotOpen] = useState(false);
 
   const resumeText = (job.resume_text ?? "").trim();
   const coverText = (job.cover_letter_text ?? "").trim();
@@ -47,6 +53,9 @@ function ReadyCard({
   const applyHref = job.application_url && job.application_url !== job.url
     ? job.application_url
     : job.url;
+
+  const status = job.apply_status ?? null;
+  const screenshot = job.apply_screenshot_url ?? null;
 
   const handleDownloadResume = useCallback(async () => {
     try { await downloadResume(job.url_encoded, job.title); }
@@ -65,6 +74,45 @@ function ReadyCard({
   const handleDismiss = async () => {
     setBusy("dismiss");
     try { onDismiss(job); } finally { setBusy(null); }
+  };
+  const handleSubmit = async () => {
+    setBusy("submit");
+    try {
+      await submitPreparedApply(job.url_encoded);
+      toast("Submission queued — worker will pick it up within 30s.");
+      onRefresh();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast(`Submit failed: ${msg}`, false);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const handleCancel = async () => {
+    setBusy("cancel");
+    try {
+      await cancelPreparedApply(job.url_encoded);
+      toast("Discarded — worker will re-prepare on next cycle.");
+      onRefresh();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast(`Cancel failed: ${msg}`, false);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const handleRetry = async () => {
+    setBusy("retry");
+    try {
+      await retryApply(job.url_encoded);
+      toast("Re-queued — worker will retry on next cycle.");
+      onRefresh();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      toast(`Retry failed: ${msg}`, false);
+    } finally {
+      setBusy(null);
+    }
   };
 
   return (
@@ -107,43 +155,177 @@ function ReadyCard({
         />
       </div>
 
-      {/* Actions */}
-      <footer className="flex flex-wrap items-center gap-2 p-4 border-t border-void-border bg-void-bg/40">
-        <a
-          href={applyHref}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={() => onMarkApplied(job)}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover transition-colors"
-        >
-          Apply on company site
-          <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
-            <path d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06L7.28 11.78a.75.75 0 1 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"/>
-          </svg>
-        </a>
+      {/* Auto-apply screenshot strip — only visible when worker prepared
+          something. Click opens a fullscreen lightbox. */}
+      {(status === "ready_to_submit" || status === "applied" || status === "failed") && screenshot && (
         <button
-          onClick={() => onOpen(job)}
-          className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text hover:border-void-accent/30 transition-colors"
+          onClick={() => setScreenshotOpen(true)}
+          className="block w-full border-t border-void-border hover:bg-void-raised/40 transition-colors text-left"
         >
-          Open detail
+          <div className="flex items-center gap-3 p-3">
+            <span className="text-xs uppercase tracking-wider text-void-subtle font-medium">
+              {status === "ready_to_submit" ? "Prepared form" : status === "applied" ? "Submitted form" : "Last attempt"}
+            </span>
+            <span className="text-xs text-void-muted">click to expand</span>
+          </div>
+          <div className="px-3 pb-3">
+            <img
+              src={screenshot}
+              alt="auto-apply preview"
+              className="w-full max-h-48 object-cover object-top border border-void-border rounded"
+            />
+          </div>
         </button>
-        <div className="ml-auto flex items-center gap-2">
-          <button
-            onClick={handleApplied}
-            disabled={busy === "applied"}
-            className="px-3 py-2 rounded-lg border border-void-success/30 text-sm text-void-success hover:bg-void-success/10 transition-colors disabled:opacity-50"
-          >
-            {busy === "applied" ? "Saving…" : "Mark applied"}
-          </button>
-          <button
-            onClick={handleDismiss}
-            disabled={busy === "dismiss"}
-            className="px-3 py-2 rounded-lg text-sm text-void-subtle hover:text-void-danger hover:bg-void-danger/10 transition-colors disabled:opacity-50"
-          >
-            Dismiss
-          </button>
-        </div>
+      )}
+
+      {/* Status-aware action footer */}
+      <footer className="flex flex-wrap items-center gap-2 p-4 border-t border-void-border bg-void-bg/40">
+        {status === "preparing" && (
+          <div className="flex items-center gap-2 text-sm text-void-muted">
+            <span className="w-3 h-3 border-2 border-void-muted/30 border-t-void-accent rounded-full animate-spin" />
+            Worker is preparing the application…
+          </div>
+        )}
+
+        {status === "ready_to_submit" && (
+          <>
+            <button
+              onClick={handleSubmit}
+              disabled={busy === "submit"}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover transition-colors disabled:opacity-50"
+            >
+              {busy === "submit" ? "Queuing…" : "Approve & Submit"}
+            </button>
+            <a
+              href={applyHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+            >
+              Open job site to compare
+            </a>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={handleCancel}
+                disabled={busy === "cancel"}
+                className="px-3 py-2 rounded-lg text-sm text-void-subtle hover:text-void-danger hover:bg-void-danger/10 transition-colors disabled:opacity-50"
+              >
+                {busy === "cancel" ? "Discarding…" : "Discard prep"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {status === "submitting" && (
+          <div className="flex items-center gap-2 text-sm text-void-muted">
+            <span className="w-3 h-3 border-2 border-void-muted/30 border-t-void-accent rounded-full animate-spin" />
+            Submitting in the background…
+          </div>
+        )}
+
+        {status === "applied" && (
+          <>
+            <span className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-void-success/10 border border-void-success/30 text-sm text-void-success font-medium">
+              <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                <path d="M12.4 4.6a.75.75 0 0 1 .2 1l-5 7.5a.75.75 0 0 1-1.16.11l-3-3a.75.75 0 1 1 1.06-1.06l2.36 2.35 4.49-6.74a.75.75 0 0 1 1.05-.16Z"/>
+              </svg>
+              Submitted
+            </span>
+            <a
+              href={applyHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+            >
+              Open on site ↗
+            </a>
+          </>
+        )}
+
+        {status === "failed" && (
+          <>
+            <div className="flex flex-col gap-1 flex-1 min-w-0">
+              <span className="text-xs text-void-danger uppercase tracking-wider font-medium">Submit failed</span>
+              {job.apply_error && (
+                <span className="text-xs text-void-muted truncate">{job.apply_error}</span>
+              )}
+            </div>
+            <button
+              onClick={handleRetry}
+              disabled={busy === "retry"}
+              className="px-3 py-2 rounded-lg border border-void-accent/30 text-sm text-void-accent hover:bg-void-accent/10 transition-colors disabled:opacity-50"
+            >
+              {busy === "retry" ? "Re-queuing…" : "Retry"}
+            </button>
+            <a
+              href={applyHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => onMarkApplied(job)}
+              className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text transition-colors"
+            >
+              Open & apply manually
+            </a>
+          </>
+        )}
+
+        {/* manual_only OR null (initial / no auto-apply) — original UX */}
+        {(status === null || status === undefined || status === "manual_only") && (
+          <>
+            <a
+              href={applyHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => onMarkApplied(job)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-void-accent text-white text-sm font-medium hover:bg-void-accent-hover transition-colors"
+            >
+              Apply on company site
+              <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5">
+                <path d="M6.22 4.22a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1 0 1.06L7.28 11.78a.75.75 0 1 1-1.06-1.06L8.94 8 6.22 5.28a.75.75 0 0 1 0-1.06Z"/>
+              </svg>
+            </a>
+            {status === "manual_only" && (
+              <span className="text-xs text-void-subtle">No auto-apply handler for this platform</span>
+            )}
+            <button
+              onClick={() => onOpen(job)}
+              className="px-3 py-2 rounded-lg border border-void-border text-sm text-void-muted hover:text-void-text hover:border-void-accent/30 transition-colors"
+            >
+              Open detail
+            </button>
+            <div className="ml-auto flex items-center gap-2">
+              <button
+                onClick={handleApplied}
+                disabled={busy === "applied"}
+                className="px-3 py-2 rounded-lg border border-void-success/30 text-sm text-void-success hover:bg-void-success/10 transition-colors disabled:opacity-50"
+              >
+                {busy === "applied" ? "Saving…" : "Mark applied"}
+              </button>
+              <button
+                onClick={handleDismiss}
+                disabled={busy === "dismiss"}
+                className="px-3 py-2 rounded-lg text-sm text-void-subtle hover:text-void-danger hover:bg-void-danger/10 transition-colors disabled:opacity-50"
+              >
+                Dismiss
+              </button>
+            </div>
+          </>
+        )}
       </footer>
+
+      {/* Screenshot lightbox */}
+      {screenshotOpen && screenshot && (
+        <div
+          onClick={() => setScreenshotOpen(false)}
+          className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+        >
+          <img
+            src={screenshot}
+            alt="auto-apply screenshot"
+            className="max-w-full max-h-full object-contain rounded shadow-2xl"
+          />
+        </div>
+      )}
     </article>
   );
 }
@@ -282,6 +464,20 @@ function ApplyPanel() {
     return () => { cancelled = true; };
   }, [refresh]);
 
+  // Auto-poll while any prepared/in-flight application is on screen, so the
+  // 'submitting → applied' transition (which the worker drains within ~30s)
+  // surfaces without a manual refresh. Stops polling as soon as nothing is
+  // mid-flight so we don't hammer the backend.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    const inFlight = readyJobs.some(
+      (j) => j.apply_status === "preparing" || j.apply_status === "submitting",
+    );
+    if (!inFlight) return;
+    const id = setInterval(() => { refresh(); }, 8000);
+    return () => clearInterval(id);
+  }, [readyJobs, refresh]);
+
   const handleMarkApplied = useCallback(async (job: Job) => {
     try {
       await markApplied(job.url_encoded);
@@ -350,6 +546,7 @@ function ApplyPanel() {
                 onOpen={(j) => setSelectedUrl(j.url_encoded)}
                 onMarkApplied={handleMarkApplied}
                 onDismiss={handleDismiss}
+                onRefresh={refresh}
               />
             ))}
             {pendingHigh > 0 && (

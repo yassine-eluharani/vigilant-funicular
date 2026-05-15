@@ -625,6 +625,10 @@ _USER_JOBS_COLUMNS: dict[str, str] = {
     "apply_status": "TEXT",
     "applied_at": "TEXT",
     "apply_error": "TEXT",
+    "apply_attempts": "INTEGER DEFAULT 0",
+    # Auto-apply: full-page screenshot of the prepared form (or success page).
+    # Set by the discovery worker's apply_handlers/* — see plan/auto-apply.
+    "apply_screenshot_url": "TEXT",
     "favorited": "INTEGER DEFAULT 0",
     "dismissed_at": "TEXT",
     "notes": "TEXT",

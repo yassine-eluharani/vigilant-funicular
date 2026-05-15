@@ -100,6 +100,20 @@ export const markStatus = (encodedUrl: string, status: string) =>
     body: JSON.stringify({ status }),
   });
 
+// ── Auto-apply (semi-auto) ────────────────────────────────────────────────
+// The discovery worker prepares applications (dry-run fill + screenshot).
+// These endpoints flip apply_status so the worker picks the row up on its
+// next cycle / submit-drain pass.
+
+export const submitPreparedApply = (encodedUrl: string) =>
+  req<{ ok: boolean; status: string }>(`/api/jobs/${encodedUrl}/submit-prepared`, { method: "POST" });
+
+export const cancelPreparedApply = (encodedUrl: string) =>
+  req<{ ok: boolean; status: string }>(`/api/jobs/${encodedUrl}/cancel-prepared`, { method: "POST" });
+
+export const retryApply = (encodedUrl: string) =>
+  req<{ ok: boolean; status: string }>(`/api/jobs/${encodedUrl}/retry-apply`, { method: "POST" });
+
 export const tailorJob = (encodedUrl: string, validation_mode = "normal") =>
   req<{ task_id: string }>(`/api/jobs/${encodedUrl}/tailor?validation_mode=${validation_mode}`, {
     method: "POST",

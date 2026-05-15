@@ -19,8 +19,14 @@ export interface Job {
   score_reasoning: string | null;
   tailored_resume_path: string | null;
   cover_letter_path: string | null;
+  // apply_status is a free-form string from the backend so new auto-apply
+  // states (preparing, ready_to_submit, submitting, failed, manual_only)
+  // don't require a frontend redeploy to surface.
   apply_status: string | null;
   applied_at: string | null;
+  apply_error?: string | null;
+  apply_attempts?: number | null;
+  apply_screenshot_url?: string | null;
   application_url: string | null;
   discovered_at: string | null;
   tailored_at: string | null;
