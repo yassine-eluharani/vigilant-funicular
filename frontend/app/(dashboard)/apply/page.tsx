@@ -281,25 +281,32 @@ function ApplyPanel() {
     return () => { cancelled = true; };
   }, [refresh]);
 
+  const removeJobLocally = useCallback((jobUrl: string) => {
+    setReadyJobs((prev) => prev.filter((j) => j.url !== jobUrl));
+    setCandidates((prev) => prev.filter((j) => j.url !== jobUrl));
+  }, []);
+
   const handleMarkApplied = useCallback(async (job: Job) => {
+    removeJobLocally(job.url);
     try {
       await markApplied(job.url_encoded);
       toast("Marked as applied");
-      refresh();
     } catch {
       toast("Failed to mark applied", false);
+      refresh();
     }
-  }, [toast, refresh]);
+  }, [toast, refresh, removeJobLocally]);
 
   const handleDismiss = useCallback(async (job: Job) => {
+    removeJobLocally(job.url);
     try {
       await dismissJob(job.url_encoded);
       toast("Job dismissed");
-      refresh();
     } catch {
       toast("Failed to dismiss", false);
+      refresh();
     }
-  }, [toast, refresh]);
+  }, [toast, refresh, removeJobLocally]);
 
   const showSetupPrompt = me && !me.has_profile;
 
