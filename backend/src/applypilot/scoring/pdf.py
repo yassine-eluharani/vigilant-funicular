@@ -106,42 +106,56 @@ def parse_skills(text: str) -> list[tuple[str, str]]:
 
 
 def parse_entries(text: str) -> list[dict]:
-    """Parse experience/project entries from section text.
+    """Parse experience/project/education entries from section text.
+
+    The assembler in tailor.py emits one blank line between entries, so we
+    split on blank lines to get entry blocks. Within a block: the first
+    non-bullet line is the title, the second is the subtitle (if any), and
+    lines starting with "- " or "• " are bullets. This works for EXPERIENCE,
+    PROJECTS, and EDUCATION (where entries typically have no bullets).
 
     Args:
-        text: The EXPERIENCE or PROJECTS section text.
+        text: The EXPERIENCE / PROJECTS / EDUCATION section text.
 
     Returns:
         List of {"title": str, "subtitle": str, "bullets": list[str]} dicts.
     """
     entries: list[dict] = []
-    lines = text.strip().split("\n")
-    current: dict | None = None
+    block: list[str] = []
 
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("- ") or stripped.startswith("\u2022 "):
-            if current:
-                current["bullets"].append(stripped[2:].strip())
-        elif current is None or (
-            not stripped.startswith("-")
-            and not stripped.startswith("\u2022")
-            and len(current.get("bullets", [])) > 0
-        ):
-            # New entry
-            if current:
-                entries.append(current)
-            current = {"title": stripped, "subtitle": "", "bullets": []}
-        elif current and not current["subtitle"]:
-            current["subtitle"] = stripped
+    def flush() -> None:
+        if not block:
+            return
+        title = ""
+        subtitle = ""
+        bullets: list[str] = []
+        for raw in block:
+            line = raw.strip()
+            if not line:
+                continue
+            if line.startswith("- ") or line.startswith("\u2022 "):
+                bullets.append(line[2:].strip())
+            elif not title:
+                title = line
+            elif not subtitle:
+                subtitle = line
+            else:
+                # Extra non-bullet line in the same block — keep it as a bullet
+                # rather than dropping silently. Rare in practice.
+                bullets.append(line)
+        if title:
+            # Strip stray leading/trailing pipes from subtitle — LLM sometimes
+            # leaves "| 2024" when an institution-less cert template collapses.
+            subtitle = subtitle.strip().lstrip("|").rstrip("|").strip()
+            entries.append({"title": title, "subtitle": subtitle, "bullets": bullets})
+
+    for raw in text.strip().split("\n"):
+        if raw.strip() == "":
+            flush()
+            block = []
         else:
-            if current:
-                current["bullets"].append(stripped)
-
-    if current:
-        entries.append(current)
+            block.append(raw)
+    flush()
 
     return entries
 
