@@ -60,10 +60,14 @@ def parse_resume(text: str) -> dict:
 
     for line in lines[body_start:]:
         stripped = line.strip()
-        # Detect section headers (all caps, no leading dash/bullet, longer than 3 chars)
+        # Detect section headers: all caps, longer than 3 chars, not a bullet,
+        # and must contain at least one A-Z letter (else a bare "2024" cert
+        # year passes the all-caps check and gets treated as a section,
+        # splitting EDUCATION in half).
         if (
             stripped
             and stripped == stripped.upper()
+            and any("A" <= c <= "Z" for c in stripped)
             and not stripped.startswith("-")
             and len(stripped) > 3
             and not stripped.startswith("\u2022")
