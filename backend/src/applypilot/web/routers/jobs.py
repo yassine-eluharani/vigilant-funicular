@@ -225,12 +225,19 @@ def list_jobs(
     parts: list[tuple[str, list]] = []
 
     if status == "scored":
-        # All scored jobs — no tailoring requirement, respects score range
+        # All scored jobs — no tailoring requirement, respects score range.
+        # Applied + dismissed are excluded so jobs the user has acted on
+        # don't reappear on /apply (and on the dashboard "ready" cards)
+        # after refresh.
         parts.extend([
             ("uj.fit_score IS NOT NULL", []),
             ("uj.fit_score >= ?", [min_score]),
             ("uj.fit_score <= ?", [max_score]),
-            ("(uj.apply_status IS NULL OR uj.apply_status NOT IN ('dismissed','location_filtered'))", []),
+            (
+                "(uj.apply_status IS NULL OR uj.apply_status NOT IN "
+                "('applied','dismissed','interview','offer','rejected','location_filtered'))",
+                [],
+            ),
         ])
     elif status == "untailored":
         parts.extend([
@@ -254,6 +261,16 @@ def list_jobs(
     elif status == "favorites":
         parts.extend([
             ("COALESCE(uj.favorited, 0) = 1", []),
+            ("uj.fit_score >= ?", [min_score]),
+            ("uj.fit_score <= ?", [max_score]),
+        ])
+    elif status in ("applied", "dismissed"):
+        # Status views need to show whatever the user marked — don't
+        # require tailored_resume_path. The worker writes
+        # tailored_resume_text; the PDF path only gets set on-demand
+        # when the user clicks Download. Filtering by path here hides
+        # every applied job the user never downloaded.
+        parts.extend([
             ("uj.fit_score >= ?", [min_score]),
             ("uj.fit_score <= ?", [max_score]),
         ])
